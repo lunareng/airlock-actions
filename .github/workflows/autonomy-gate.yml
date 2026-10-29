@@ -2,9 +2,10 @@
 # main on purpose (2026-10-21): main is already the policy every level and floor comes from, only Matthew
 # merges there (enforce_admins, the validate check), and a SHA pin only meant a round of bump PRs on every
 # gate change. The org's Actions policy pins every `uses:` to a commit, lunareng's own included, so the
-# gate is not referenced as an action: the job checks lunareng/autonomy out at main with the lunar-reader
-# App (org secrets AUTONOMY_READER_APP_ID / AUTONOMY_READER_PRIVATE_KEY; Contents read on every repo) and
-# runs it as a path-local action, which the policy allows.
+# gate is not referenced as an action: the job checks lunareng/autonomy out at main and runs it as a
+# path-local action, which the policy allows. The token for that checkout comes from Airlock (POST /v1/read,
+# lunareng/airlock#45): Contents read on the policy repo alone, for this repository's own gate workflow, proven
+# by the job's GitHub OIDC token. The one App the org installs is Airlock's; there is no reader App or secret.
 name: autonomy gate
 on:
   pull_request:   # edited and auto_merge_*: an L1 PR's Proof owed and auto-merge are part of its verdict (autonomy#146)
@@ -14,6 +15,7 @@ on:
 permissions:
   contents: read
   pull-requests: write
+  id-token: write   # the OIDC token Airlock reads the policy for
 jobs:
   gate:
     name: autonomy-gate
@@ -22,13 +24,20 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
-      - uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+      - name: airlock (a read of the policy repo; no token, no gate)
         id: reader
-        with:
-          app-id: ${{ secrets.AUTONOMY_READER_APP_ID }}
-          private-key: ${{ secrets.AUTONOMY_READER_PRIVATE_KEY }}
-          owner: lunareng
-          repositories: autonomy
+        env:
+          AIRLOCK: https://airlock.lunareng.com
+        run: |
+          oidc="$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$AIRLOCK" | python3 -c 'import json,sys; print(json.load(sys.stdin)["value"])')"
+          answer="$(curl -sS -X POST -H "Authorization: Bearer $oidc" "$AIRLOCK/v1/read")"
+          token="$(printf '%s' "$answer" | python3 -c 'import json,re,sys; t=json.load(sys.stdin).get("token") or ""; print(t if re.fullmatch(r"[A-Za-z0-9_.~+/=-]{20,4096}", t) else "")')"
+          if [ -z "$token" ]; then
+            printf '%s' "$answer" | python3 -c 'import json,sys; a=json.load(sys.stdin); print("Airlock refused the policy read: %s (%s)" % (a.get("reason"), a.get("message")))' || echo "Airlock: no answer"
+            exit 1
+          fi
+          echo "::add-mask::$token"
+          echo "token=$token" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: lunareng/autonomy
@@ -36,3 +45,10 @@ jobs:
           token: ${{ steps.reader.outputs.token }}
           path: .autonomy
       - uses: ./.autonomy/gate
+      - name: airlock (end the policy read)
+        if: always() && steps.reader.outputs.token != ''
+        continue-on-error: true
+        env:
+          TOKEN: ${{ steps.reader.outputs.token }}
+        run: |
+          curl -sS -o /dev/null -w 'policy read ended: %{http_code}\n' -X DELETE -H "Authorization: Bearer $TOKEN" https://api.github.com/installation/token
