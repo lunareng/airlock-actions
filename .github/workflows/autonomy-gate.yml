@@ -1,0 +1,38 @@
+# Copy to .github/workflows/autonomy-gate.yml in a lunareng repo. The gate follows lunareng/autonomy's
+# main on purpose (2026-10-21): main is already the policy every level and floor comes from, only Matthew
+# merges there (enforce_admins, the validate check), and a SHA pin only meant a round of bump PRs on every
+# gate change. The org's Actions policy pins every `uses:` to a commit, lunareng's own included, so the
+# gate is not referenced as an action: the job checks lunareng/autonomy out at main with the lunar-reader
+# App (org secrets AUTONOMY_READER_APP_ID / AUTONOMY_READER_PRIVATE_KEY; Contents read on every repo) and
+# runs it as a path-local action, which the policy allows.
+name: autonomy gate
+on:
+  pull_request:   # edited and auto_merge_*: an L1 PR's Proof owed and auto-merge are part of its verdict (autonomy#146)
+    types: [opened, synchronize, reopened, edited, auto_merge_enabled, auto_merge_disabled]
+  pull_request_review:   # the owner's approval on an agent's L1/L2 PR passes the gate (gate/action.yml)
+    types: [submitted, dismissed]
+permissions:
+  contents: read
+  pull-requests: write
+jobs:
+  gate:
+    name: autonomy-gate
+    runs-on: lunareng-ci # the org's self-hosted pool (lunareng/k8s infrastructure/arc), which bills no Actions minutes (2026-10-22)
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        id: reader
+        with:
+          app-id: ${{ secrets.AUTONOMY_READER_APP_ID }}
+          private-key: ${{ secrets.AUTONOMY_READER_PRIVATE_KEY }}
+          owner: lunareng
+          repositories: autonomy
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: lunareng/autonomy
+          ref: main
+          token: ${{ steps.reader.outputs.token }}
+          path: .autonomy
+      - uses: ./.autonomy/gate

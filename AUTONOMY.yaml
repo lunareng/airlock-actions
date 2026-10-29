@@ -1,0 +1,36 @@
+schema: 1
+repo: lunareng/airlock-actions
+# The public half of Airlock: what a tenant's own workflows call (lunareng/airlock#41; Matthew, 2026-10-29:
+# "standardizing the github action, publishing, versioning. how do end-user repos adopt the actions?").
+# The mint/revoke JavaScript action (its post: step always hands the token back) and the role, gate and
+# review reusable workflows, released as immutable vX.Y.Z tags with a moving vX. Public because another
+# org can only call public actions; lunareng/airlock, the hosted service, stays private. Created private by
+# new-repo.yml; Matthew makes it public before the first release.
+# The action handles every tenant's tokens and a release reaches every tenant, so it starts at L1 like
+# lunareng/airlock: every PR waits for Matthew.
+# A tag here is a release: a tenant on @v1 runs whatever v1 points at, and a tag push skips the PR and the
+# gate. So an org ruleset on refs/tags/v* in this repo blocks tag create, update and delete for everyone but
+# org admins, and it exists before any App is installed here. Matthew cuts every release; the role can't.
+default: L1
+owner_role: autonomy-engineer
+actions:
+  deploy: L1         # cutting a release or moving a major tag is a deploy to every tenant
+  send: L2
+  spend: L2
+  delete_data: L1
+  touch_ehi: L1
+  change_policy: L2
+judge:
+  # Numbers the repo's own PRs can't move without the tests passing: CI on every main commit.
+  metric: action_suite_green
+  source: "ci:lunareng/airlock-actions (post-step revoke on failure and cancel, token masked, version header sent) + ci:lunareng/airlock Mint reusable-workflow tests"
+  pass: "green on every main commit and on every release tag; no release tag ever re-pointed"
+digest: friday
+budget:
+  prs_in_flight: 2
+  prs_per_week: 5
+  spend_usd: 0
+
+# Permanent floors from the charter (cannot be loosened here):
+#   Capcom send/consent/suppression L2 · Academy publish/email L2 · Parlor payments/deposits/SMS L2
+#   LunarMD EHI L1 · secrets/DNS/backups/cluster auth L1 · deleting customer data L1
