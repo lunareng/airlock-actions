@@ -1,0 +1,130 @@
+schema: 1
+repo: acme/api
+owner_role: api-engineer   # tool-request issues here dispatch the api-engineer (router)
+# The path-aware gate (.github/workflows/autonomy-gate.yml) scores every PR, so the repo runs at L3 and the
+# floors below hold the risky paths at L2 or L1 (2026-10-21; before this, L2 as a whole left every agent PR,
+# a docs-mcp runbook refresh included, unmergeable by anyone). The charter's permanent floors are at the end.
+default: L3
+actions:
+  send: L2
+  spend: L2
+  delete_data: L1
+  touch_ehi: L1
+  change_policy: L2
+paths:
+  # Spring Modulith modules live under apps/api/src/main/java/dev/coderanger/api/<module>/.
+  # LunarMD EHI: anything that stores or renders patient data. Permanent L1 floor.
+  - glob: "apps/api/src/main/java/dev/coderanger/api/lunarmd/internal/charts/**"
+    level: L1
+    why: Charts are EHI.
+  - glob: "apps/api/src/main/java/dev/coderanger/api/lunarmd/internal/patients/**"
+    level: L1
+    why: Patient records are EHI.
+  - glob: "apps/api/src/main/java/dev/coderanger/api/lunarmd/internal/patientimages/**"
+    level: L1
+    why: Patient images are EHI.
+  - glob: "apps/api/src/main/java/dev/coderanger/api/lunarmd/internal/history/**"
+    level: L1
+    why: Treatment history is EHI.
+  - glob: "apps/api/src/main/java/dev/coderanger/api/lunarmd/internal/dispensing/**"
+    level: L1
+    why: Dispensing records are EHI.
+  - glob: "apps/api/src/main/java/dev/coderanger/api/lunarmd/internal/access/**"
+    level: L1
+    why: EHI access control and audit.
+  - glob: "apps/api/src/main/java/dev/coderanger/api/lunarmd/internal/activity/**"
+    level: L1
+    why: Activity log is the EHI audit trail.
+  # Capcom consent and suppression. Permanent L2 floor.
+  - glob: "apps/api/src/main/java/dev/coderanger/api/capcom/internal/*Consent*"
+    level: L2
+    why: Consent records are a permanent L2 floor.
+  - glob: "apps/api/src/main/java/dev/coderanger/api/capcom/internal/*Suppression*"
+    level: L2
+    why: Suppression list is a permanent L2 floor.
+  # Sending and money. Permanent L2 floor.
+  - glob: "packages/platform-email/**"
+    level: L2
+    why: Outbound email.
+  - glob: "packages/platform-sms/**"
+    level: L2
+    why: Outbound SMS; carrier compliance.
+  - glob: "packages/platform-stripe/**"
+    level: L2
+    why: Payments.
+  - glob: "apps/api/src/main/java/dev/coderanger/api/contacts/**"
+    level: L2
+    why: Customer contacts.
+  - glob: "apps/api/src/main/java/dev/coderanger/api/billing/**"
+    level: L2
+    why: Billing.
+  - glob: "apps/api/src/main/java/dev/coderanger/api/checkout/**"
+    level: L2
+    why: Checkout takes money.
+  - glob: "apps/api/src/main/java/dev/coderanger/api/parlor/internal/payments/**"
+    level: L2
+    why: Parlor payments and deposits.
+  - glob: "apps/api/src/main/java/dev/coderanger/api/lunarmd/internal/payments/**"
+    level: L2
+    why: LunarMD payments.
+  # Capcom sending. Permanent L2 floor (the charter: send, consent, suppression).
+  - glob: "apps/api/src/main/java/dev/coderanger/api/capcom/internal/*Broadcast*"
+    level: L2
+    why: Broadcasts send to contacts.
+  - glob: "apps/api/src/main/java/dev/coderanger/api/capcom/internal/*Sequence*"
+    level: L2
+    why: Sequences send to contacts.
+  - glob: "apps/api/src/main/java/dev/coderanger/api/capcom/internal/*Automation*"
+    level: L2
+    why: Automations send to contacts.
+  - glob: "apps/api/src/main/java/dev/coderanger/api/capcom/internal/*Message*"
+    level: L2
+    why: Outbound messages.
+  - glob: "apps/api/src/main/java/dev/coderanger/api/support/internal/*Send*"
+    level: L2
+    why: Houston sends to customers.
+  # LunarMD as a whole stays L2: a passkey-floored EHR; its EHI paths above are L1.
+  - glob: "apps/api/src/main/java/dev/coderanger/api/lunarmd/**"
+    level: L2
+    why: LunarMD is the EHR; every change is reviewed by Matthew until the EHI review policy says otherwise.
+  # Hard to reverse.
+  - glob: "apps/api/src/main/resources/db/migration/**"
+    level: L2
+    why: Schema migrations are hard to reverse (the glob used to say src/main/java and never matched).
+  - glob: "packages/platform-security/**"
+    level: L1
+    why: Auth and secrets handling.
+  - glob: "apps/api/src/main/java/dev/coderanger/api/auth/**"
+    level: L1
+    why: Sign-in, passkeys and sessions.
+  - glob: "apps/api/src/main/java/dev/coderanger/api/config/**"
+    level: L1
+    why: SecurityConfig and the auth posture (the repo CLAUDE.md escalation list).
+  # docs-mcp decides every agent's MCP access: which client a token or Airlock session is, its scopes and its
+  # tools (airlock#29, 2026-10-26). It was L3 by default while it held that.
+  - glob: "apps/docs-mcp/src/main/java/dev/coderanger/docs/transport/**"
+    level: L1
+    why: Who may call the MCP server, as which client, and which tools it sees.
+  - glob: "apps/docs-mcp/src/main/java/dev/coderanger/docs/config/**"
+    level: L1
+    why: MCP client tokens and scopes, and the Airlock session settings.
+  - glob: "apps/docs-mcp/src/main/java/dev/coderanger/docs/tools/ToolAccessConfig.java"
+    level: L1
+    why: Which scope opens which tools.
+  - glob: "apps/docs-mcp/src/main/resources/application*.yml"
+    level: L2
+    why: docs-mcp's wiring, where client token, scope and Airlock session settings are read from.
+  - glob: "apps/api/src/main/resources/application*.yml"
+    level: L2
+    why: Wiring and credentials references.
+  - glob: "infra/**"
+    level: L1
+    why: The image and the cluster manifests.
+  - glob: ".github/workflows/**"
+    level: L2
+    why: CI and deploy pipelines.
+digest: friday
+
+# Permanent floors from the charter (cannot be loosened here):
+#   Capcom send/consent/suppression L2 · Academy publish/email L2 · Parlor payments/deposits/SMS L2
+#   LunarMD EHI L1 · secrets/DNS/backups/cluster auth L1 · deleting customer data L1
