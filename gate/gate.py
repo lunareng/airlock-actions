@@ -381,6 +381,8 @@ def main() -> int:
         reasons.append("the human owner approved this commit: the PR may merge" if allowed else
                        "the human owner approved this commit, but at L1 a person must also act (the L1 lines above)")
 
+    # Every reason once more through shown(): a glob or a key from the PR's own AUTONOMY.yaml can't add a line either.
+    reasons = [shown(r) for r in reasons]
     result = {"level": level, "agent": agent, "credited": credited, "allowed": allowed, "changed": len(paths), "reasons": reasons,
               "level_reasons": level_reasons}
     if a.json:

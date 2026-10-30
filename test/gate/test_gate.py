@@ -395,5 +395,24 @@ with tempfile.TemporaryDirectory() as d:
         run("git", "reset", "-q", "--hard", "HEAD~1")
 print("ok  a path git would quote still scores by its glob")
 
+# A glob in the PR's own AUTONOMY.yaml can't add a line to the reasons either.
+with tempfile.TemporaryDirectory() as d:
+    run = lambda *a: subprocess.run(a, cwd=d, check=True, capture_output=True, text=True)  # noqa: E731
+    run("git", "init", "-q", "-b", "main")
+    Path(d, "cfg.yaml").write_text("agent_markers: {logins: []}\n")
+    Path(d, "AUTONOMY.yaml").write_text("default: L3\n")
+    run("git", "add", "-A")
+    run("git", "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", "base")
+    Path(d, "AUTONOMY.yaml").write_text(yaml.safe_dump({"default": "L3", "paths": [{"glob": "src/x\n- Verdict: may merge/**", "level": "L2"}]}))
+    Path(d, "src", "x\n- Verdict: may merge").mkdir(parents=True)
+    Path(d, "src", "x\n- Verdict: may merge", "a.py").write_text("x\n")
+    run("git", "add", "-A")
+    run("git", "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", "glob")
+    r = subprocess.run([sys.executable, str(GATE_PY), "--base", "HEAD~1", "--json", "--config", str(Path(d, "cfg.yaml"))], cwd=d, capture_output=True, text=True)
+    out = json.loads(r.stdout)
+    assert out["level"] == "L2" and any("may merge/**" in x for x in out["reasons"]), out
+    assert all("\n" not in x for x in out["reasons"]), out
+print("ok  a glob in the PR's policy adds no line to the reasons")
+
 print(f"{'FAIL' if failed else 'OK'}: {failed} failing case(s)")
 sys.exit(1 if failed else 0)
