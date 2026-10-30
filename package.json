@@ -1,0 +1,13 @@
+{
+  "name": "airlock-actions",
+  "version": "1.0.0",
+  "private": true,
+  "description": "The public half of Airlock: the action a tenant's role workflow calls for its run's GitHub token and MCP sessions",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}

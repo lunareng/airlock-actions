@@ -1,0 +1,71 @@
+# The action's tests: its two steps against stand-ins with no network (npm test), then the judge's proof on a
+# real runner (AUTONOMY.yaml: post-step revoke on failure, the token masked, the version header sent). A job whose
+# agent step fails still hands its token back to a stand-in Airlock on 127.0.0.1, and that job's own log, read
+# back from GitHub, shows the token only as ***. Cancel isn't run here: the post step's `post-if: always()`
+# (action.yml, held by npm test) is GitHub's own promise that it runs on cancel too.
+name: test
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  test:
+    runs-on: lunareng-ci # the org's self-hosted pool (lunareng/k8s infrastructure/arc), which bills no Actions minutes (2026-10-22)
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - run: npm test
+
+  hand-back:
+    runs-on: lunareng-ci
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write # the action asks GitHub for an OIDC token, here for the stand-in's address
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - name: a stand-in Airlock on 127.0.0.1
+        run: node test/e2e/stand-in.mjs start "$RUNNER_TEMP/airlock.log"
+      # Before the action, so its post step runs after the action's and checks what the stand-in saw.
+      - uses: ./test/e2e/verify
+        with:
+          log: ${{ runner.temp }}/airlock.log
+      - uses: ./
+        id: airlock
+        with:
+          role: e2e
+          airlock-url: http://127.0.0.1:8787
+      - name: the agent fails, after printing its token (which the log shows as ***)
+        continue-on-error: true
+        env:
+          TOKEN: ${{ steps.airlock.outputs.token }}
+        run: |
+          test -n "$TOKEN"
+          echo "the agent's token: $TOKEN"
+          exit 1
+
+  logs:
+    needs: hand-back
+    runs-on: lunareng-ci
+    timeout-minutes: 5
+    permissions:
+      actions: read # the hand-back job's log
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - run: node test/e2e/logs.mjs
+        env:
+          GH_TOKEN: ${{ github.token }}

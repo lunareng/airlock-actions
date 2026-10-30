@@ -1,0 +1,13 @@
+# Test only (.github/workflows/test.yml). A step placed before the Airlock action, so its post step runs after
+# the action's (post steps run in reverse order) and fails the job unless the stand-in saw the token come back.
+name: verify the hand-back
+description: Test only. Fails the job unless the stand-in Airlock saw the run's token handed back.
+inputs:
+  log:
+    description: The stand-in Airlock's log (test/e2e/stand-in.mjs).
+    required: true
+runs:
+  using: node24
+  main: keep.mjs
+  post: check.mjs
+  post-if: always()

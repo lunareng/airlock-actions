@@ -1,0 +1,33 @@
+# lunareng/airlock-actions@v1: one role run's key from Airlock (lunareng/airlock#41). The main step proves the run
+# with the job's GitHub OIDC token, gets its token and MCP sessions from POST /v1/mint and masks them; the post
+# step hands the token back through POST /v1/revoke whatever happened to the job. No dependencies: src/ is what
+# runs, so there is no build and no dist/ to drift from it.
+name: Airlock
+description: Gets this run's GitHub token and MCP sessions from Airlock, and hands the token back when the job ends.
+author: Lunar Engineering
+branding:
+  icon: lock
+  color: blue
+inputs:
+  role:
+    description: "The role this run is: the {role} in your policy repo's roles/{role}/role.yaml and .github/workflows/role-{role}.yml."
+    required: true
+  airlock-url:
+    description: "Airlock's origin. Also the audience of the OIDC token the action requests."
+    required: false
+    default: https://airlock.lunareng.com
+outputs:
+  token:
+    description: "The run's GitHub installation token, masked in the log. Good for GitHub's hour, and no wider than the role's file."
+  expires-at:
+    description: "When the token expires (ISO 8601)."
+  sessions:
+    description: "The run's MCP sessions as JSON, one per server in the file's run.mcp, keyed by connector: each with its audience, token, expiresAt, scopes and tools."
+  read-token:
+    description: "A token that can only read the repositories the file's run.clone names and its writes don't, masked; empty when there are none. The post step ends it."
+runs:
+  using: node24
+  main: src/main.mjs
+  post: src/post.mjs
+  # On success, failure and cancel alike: a run's token goes back with its run.
+  post-if: always()
