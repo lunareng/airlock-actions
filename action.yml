@@ -1,0 +1,46 @@
+name: Airlock
+description: Gets this run's GitHub token and MCP sessions from Airlock, exports its Claude Code telemetry, and hands the token back when the job ends.
+author: lunareng
+branding:
+  icon: lock
+  color: blue
+inputs:
+  role:
+    description: The role this run is, the {role} in your policy repo's roles/{role}/role.yaml and .github/workflows/role-{role}.yml.
+    required: true
+  signal:
+    description: What the run was dispatched for, an issue or pull request URL in your organization. Airlock records it for the run's report. Empty sends none.
+    required: false
+    default: ""
+  sessions:
+    description: The MCP connectors the run needs a session for, comma-separated (the keys of the role file's run.mcp). A connector Airlock hands no session for stops the run.
+    required: false
+    default: ""
+  shadow:
+    description: "true for a role still in shadow: the step prints what Airlock would hand out and never fails. false (the default) for a live role: anything but a grant stops the run."
+    required: false
+    default: "false"
+  airlock-url:
+    description: Airlock's origin. Also the audience of the OIDC token the action requests.
+    required: false
+    default: https://airlock.lunareng.com
+outputs:
+  token:
+    description: The run's GitHub installation token, masked in the log. Good for GitHub's hour, and no wider than the role's file. Empty in shadow.
+  expires-at:
+    description: When the token expires (ISO 8601).
+  sessions:
+    description: The run's MCP sessions as JSON, keyed by connector, each with its audience, token, expiresAt, scopes and tools. Every token in it is masked. Each is also its own output, session_<connector>.
+  read-token:
+    description: A Contents-read token for the repositories the role clones but doesn't write (run.clone), masked; empty when it clones none. The post step ends it.
+  decision:
+    description: Airlock's decision, granted, would_grant or refused.
+  run:
+    description: This run in Airlock's log, <run id>.<attempt>, linking to its page on the dashboard.
+  telemetry:
+    description: '"true" when the tenant sends role runs'' Claude Code telemetry to Airlock and the step exported its env to the later steps, else "false".'
+runs:
+  using: node24
+  main: main.mjs
+  post: post.mjs
+  post-if: always()

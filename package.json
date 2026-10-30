@@ -1,0 +1,13 @@
+{
+  "name": "airlock-actions",
+  "private": true,
+  "version": "1.0.0",
+  "description": "lunareng/airlock-actions: a role run's token, MCP sessions and Claude Code telemetry from Airlock, handed back when the job ends",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}
