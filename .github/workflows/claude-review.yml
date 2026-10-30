@@ -26,7 +26,7 @@ jobs:
   review:
     name: claude-review
     if: ${{ !github.event.pull_request.draft }}
-    runs-on: lunareng-ci # the org's self-hosted pool (lunareng/k8s infrastructure/arc), which bills no Actions minutes (2026-10-22)
+    runs-on: ubuntu-latest # a public repository: GitHub-hosted runners, free, and the self-hosted pools take no public repositories
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -134,7 +134,7 @@ jobs:
   security:
     name: claude-security-review
     if: ${{ github.event_name == 'pull_request' && !github.event.pull_request.draft }}
-    runs-on: lunareng-ci # the org's self-hosted pool (lunareng/k8s infrastructure/arc), which bills no Actions minutes (2026-10-22)
+    runs-on: ubuntu-latest # a public repository: GitHub-hosted runners, free, and the self-hosted pools take no public repositories
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0

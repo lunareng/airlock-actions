@@ -19,7 +19,7 @@ permissions:
 jobs:
   gate:
     name: autonomy-gate
-    runs-on: lunareng-ci # the org's self-hosted pool (lunareng/k8s infrastructure/arc), which bills no Actions minutes (2026-10-22)
+    runs-on: ubuntu-latest # a public repository: GitHub-hosted runners, free, and the self-hosted pools take no public repositories
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
