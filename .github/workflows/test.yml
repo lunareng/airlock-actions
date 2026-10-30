@@ -30,9 +30,11 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - name: the role workflow's steps
+      - name: the gate, and the role workflow's steps
         run: |
           pip install --quiet pyyaml==6.0.3
+          python test/gate/test_gate.py
+          python test/gate/test_policy.py
           python test/role/test_role.py
 
   hand-back:

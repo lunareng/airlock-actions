@@ -53,6 +53,44 @@ jobs:
 | `read-token` | A token that can only read the repositories the file's `run.clone` names and its writes don't. Empty when there are none. |
 | `telemetry` | `true` when Claude Code's telemetry env was exported to the later steps; `false` when the tenant's telemetry is off. |
 
+## The gate
+
+`lunareng/airlock-actions/gate` is the autonomy gate every repository runs on its pull requests. It scores the PR's level from the paths it touches, its `AUTONOMY.yaml` and its file in your policy repo (the stricter of the two), and labels it `level:Lx`. It fails an agent's L1 or L2 PR until your human owner approves its current commit, and says why on the Checks tab.
+
+It reads your policy repo through Airlock, so the workflow must be `.github/workflows/autonomy-gate.yml` and its job must be named `autonomy-gate`:
+
+```yaml
+name: autonomy gate
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited, auto_merge_enabled, auto_merge_disabled]
+  pull_request_review:
+    types: [submitted, dismissed]
+permissions:
+  contents: read
+  pull-requests: write
+  id-token: write   # the OIDC token Airlock reads the policy for
+  actions: write    # a review re-runs the push-time job, so the PR keeps one autonomy-gate row
+jobs:
+  gate:
+    name: autonomy-gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: lunareng/airlock-actions/gate@v1
+```
+
+| Input | Default | |
+| --- | --- | --- |
+| `airlock-url` | `https://airlock.lunareng.com` | Airlock's origin. |
+| `rerun-wait-seconds` | `300` | On a review, how long to wait for a push-time run still going. |
+
+| Output | |
+| --- | --- |
+| `level` | The PR's level, `L1` to `L4`. |
+| `passed` | `true` or `false` once the level is computed; empty if the gate stopped before. |
 ## The role workflow
 
 `lunareng/airlock-actions/.github/workflows/role.yml` is one whole role run, so a role's workflow in your policy repo is only its triggers and this call. It reads `roles/<role>/role.yaml` at the run's commit:
@@ -103,7 +141,9 @@ Every release has an exact tag (`v1.0.0`) and a major tag (`v1`) that moves to t
 No dependencies: `src/` is what runs, on the runner's own Node.
 
 ```bash
-npm test   # both steps against stand-ins for GitHub and Airlock, no network
+npm test                          # both steps against stand-ins for GitHub and Airlock, no network
+python3 test/gate/test_gate.py    # the gate's scoring, verdicts and re-run plan (needs pyyaml)
+python3 test/gate/test_policy.py  # its policy read, against a stand-in Airlock and GitHub on 127.0.0.1
 ```
 
 CI also runs the action on a real runner against a stand-in Airlock (`.github/workflows/test.yml`). In that run, a job whose agent step fails still hands its token back, and the job's log shows the token only as `***`.

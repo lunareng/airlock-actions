@@ -1,0 +1,200 @@
+name: autonomy gate
+description: >
+  Compute a pull request's level from its diff, the repo's AUTONOMY.yaml and its file on lunareng/autonomy's
+  main (the stricter of the two), label it level:Lx,
+  write the reasons to the job summary, and fail only for an agent-authored PR at L1/L2 that the human
+  owner has not approved on its current commit (an APPROVED review on the head sha passes it, so the
+  caller runs on pull_request_review as well as pull_request). A PR Airlock's App opened also fails
+  unless Airlock's stamp credits a role with its head commit (or the owner approved that commit). At L1
+  auto-merge must be off, so a person merges, and the approval is enough unless the PR owes proof; then it
+  needs a second key (autonomy#146): every `## Proof owed` item answered by the owner's `## Proof` comment. It reads the tenant's policy repo through Airlock (POST /v1/read): config.yaml, every role's login and this
+  repository's file there, so the caller's workflow must be .github/workflows/autonomy-gate.yml. On a review, it
+  re-runs the push-time job when the verdict differs, so the PR keeps one autonomy-gate row (autonomy#157).
+  The caller job needs permissions contents:read, pull-requests:write, id-token:write and actions:write, and a
+  checkout with fetch-depth 0.
+inputs:
+  airlock-url:
+    description: Airlock's origin
+    default: https://airlock.lunareng.com
+  rerun-wait-seconds:
+    description: on a review, how long to wait for a push-time run that is still going
+    default: "300"
+outputs:
+  passed:
+    description: "true or false once the level is computed, empty if the gate stopped before (gate/rerun reads it, autonomy#157)"
+    value: ${{ steps.gate.outputs.passed }}
+  level:
+    description: the PR's level, L1 to L4
+    value: ${{ steps.gate.outputs.level }}
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      with:
+        python-version: "3.12"
+    - shell: bash
+      run: |
+        pip install --quiet pyyaml
+        # Every step runs python -I, which never reads the user site pip falls back to when site-packages isn't writable.
+        python -I -c 'import yaml' || { echo "::error title=autonomy gate::pyyaml isn't importable by an isolated Python (pip installed it to the user site?)"; exit 1; }
+    - name: airlock (a read of the policy repo; no policy, no gate)
+      shell: bash
+      env:
+        AIRLOCK: ${{ inputs.airlock-url }}
+        REPO_NAME: ${{ github.event.repository.name }}
+        GATE: ${{ github.action_path }}
+      run: python -I "$GATE/policy.py" --airlock "$AIRLOCK" --repo-name "$REPO_NAME" --config-out "$RUNNER_TEMP/gate-config.yaml" --policy-out "$RUNNER_TEMP/main-policy.yaml"
+    - name: gh (the lunareng-ci runner image ships none; pinned checksum, as lunareng/api installs it)
+      shell: bash
+      env:
+        GH_VERSION: "2.101.0"
+        GH_SHA256: "9bca2d1c16825f109907a23307628a2f0698fbf99662b73a5cf0b020293072b8"
+      run: |
+        set -euo pipefail
+        command -v gh >/dev/null && exit 0
+        dir="$RUNNER_TEMP/gh-${GH_VERSION}"; mkdir -p "$dir"
+        curl -sSfL -o "$dir/gh.tar.gz" "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz"
+        echo "${GH_SHA256}  $dir/gh.tar.gz" | sha256sum -c -
+        tar xzf "$dir/gh.tar.gz" -C "$dir" --strip-components=2 "gh_${GH_VERSION}_linux_amd64/bin/gh"
+        echo "$dir" >> "$GITHUB_PATH"
+    - name: owner approval on this commit
+      id: approval
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        REPO: ${{ github.repository }}
+        PR: ${{ github.event.pull_request.number }}
+        HEAD: ${{ github.event.pull_request.head.sha }}
+        GATE: ${{ github.action_path }}
+      run: |
+        owner="$(python -I -c 'import yaml;print(yaml.safe_load(open("'"$RUNNER_TEMP"'/gate-config.yaml"))["human_owner"].lstrip("@"))')"
+        # The owner's latest review on this exact commit decides, across every page of reviews; a review on an older commit says nothing
+        # about this one, and a later CHANGES_REQUESTED or DISMISSED cancels an earlier APPROVED.
+        state="$(gh api --paginate "repos/$REPO/pulls/$PR/reviews?per_page=100" --jq ".[] | select(.user.login == \"$owner\" and .commit_id == \"$HEAD\" and .state != \"COMMENTED\") | .state" | tail -n 1)"
+        echo "state=$state" >> "$GITHUB_OUTPUT"
+        if [ "$state" = "APPROVED" ]; then echo "approved=--approved" >> "$GITHUB_OUTPUT"; else echo "approved=" >> "$GITHUB_OUTPUT"; fi
+        echo "owner review on $HEAD: ${state:-none}"
+    - name: the PR's Proof owed, the owner's proof comments and auto-merge (the L1 second key, autonomy#146)
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        REPO: ${{ github.repository }}
+        PR: ${{ github.event.pull_request.number }}
+        GATE: ${{ github.action_path }}
+      run: |
+        # Read live, not from the event: the body, auto-merge and the comments may have changed since it fired.
+        # Only the owner's comments and review bodies can carry proof. If a read fails there is no gate-pr.json,
+        # and gate.py fails an approved L1 PR for want of it; no other level reads it.
+        rm -f "$RUNNER_TEMP/gate-pr.json"
+        owner="$(python -I -c 'import yaml;print(yaml.safe_load(open("'"$RUNNER_TEMP"'/gate-config.yaml"))["human_owner"].lstrip("@"))')"
+        gh api "repos/$REPO/pulls/$PR" > "$RUNNER_TEMP/pr.json" &&
+          gh api --paginate --slurp "repos/$REPO/issues/$PR/comments?per_page=100" > "$RUNNER_TEMP/comments.json" &&
+          gh api --paginate --slurp "repos/$REPO/pulls/$PR/reviews?per_page=100" > "$RUNNER_TEMP/reviews.json" ||
+          { echo "could not read the PR's body, comments or reviews; an approved L1 PR fails without them"; exit 0; }
+        OWNER="$owner" python -I - <<'PY' || echo "could not assemble the PR data; an approved L1 PR fails without it"
+        import json, os
+        t = os.environ["RUNNER_TEMP"]
+        pr = json.load(open(f"{t}/pr.json"))
+        notes = [c for page in json.load(open(f"{t}/comments.json")) for c in page]
+        notes += [r for page in json.load(open(f"{t}/reviews.json")) for r in page]
+        proofs = [n.get("body") or "" for n in notes if (n.get("user") or {}).get("login") == os.environ["OWNER"]]
+        json.dump({"body": pr.get("body") or "", "auto_merge": bool(pr.get("auto_merge")), "proofs": proofs}, open(f"{t}/gate-pr.json", "w"))
+        print(f"auto-merge: {'on' if pr.get('auto_merge') else 'off'}; owner comments and reviews: {len(proofs)}")
+        PY
+    - name: which role pushed the head (Airlock's stamp; PRs Airlock's App opened only)
+      shell: bash
+      env:
+        AUTHOR: ${{ github.event.pull_request.user.login }}
+        OWNER_ID: ${{ github.repository_owner_id }}
+        REPO_ID: ${{ github.event.repository.id }}
+        HEAD: ${{ github.event.pull_request.head.sha }}
+        GATE: ${{ github.action_path }}
+      run: |
+        # Every role on Airlock opens PRs as one App, so Airlock's stamp says which role pushed the commit
+        # (lunareng/airlock, GET /v1/stamps). Its webhook usually lands before this job starts; wait a little
+        # for it, then let gate.py fail the PR without one. Other authors skip this.
+        rm -f "$RUNNER_TEMP/airlock-stamp.json"
+        read -r login url wait < <(python -I -c 'import yaml;a=yaml.safe_load(open("'"$RUNNER_TEMP"'/gate-config.yaml")).get("airlock") or {};print(a.get("app_login","-"),a.get("url","-"),a.get("stamp_wait_seconds",120))') || true
+        [ -n "${login:-}" ] || exit 0
+        [ "$AUTHOR" = "$login" ] || exit 0
+        deadline=$(( $(date +%s) + wait ))
+        while :; do
+          code="$(curl -sS -o "$RUNNER_TEMP/stamp.body" -w '%{http_code}' --max-time 10 "$url/v1/stamps/$OWNER_ID/$REPO_ID/$HEAD")" || true
+          [ -n "$code" ] || code=000
+          if [ "$code" = 200 ]; then cp "$RUNNER_TEMP/stamp.body" "$RUNNER_TEMP/airlock-stamp.json"; break; fi
+          if [ "$(date +%s)" -ge "$deadline" ]; then
+            [ "$code" = 404 ] && why="Airlock has no stamp for $HEAD" || why="Airlock did not answer (HTTP $code)"
+            printf '{"role": null, "reason": "%s"}' "$why" > "$RUNNER_TEMP/airlock-stamp.json"
+            break
+          fi
+          sleep 10
+        done
+        echo "Airlock stamp for $HEAD: $(cat "$RUNNER_TEMP/airlock-stamp.json")"
+    - name: compute level
+      id: gate
+      shell: bash
+      env:
+        BASE: ${{ github.event.pull_request.base.sha }}
+        BRANCH: ${{ github.event.pull_request.head.ref }}
+        AUTHOR: ${{ github.event.pull_request.user.login }}
+        GATE: ${{ github.action_path }}
+        APPROVED: ${{ steps.approval.outputs.approved }}
+        REPO_NAME: ${{ github.event.repository.name }}
+      run: |
+        set +e
+        # The repo's policy on the policy repo's main scores the PR too, the stricter of it and AUTONOMY.yaml
+        # (autonomy#160): a tightening there binds an open PR at its next run, before the copy here is rolled out.
+        python -I "$GATE/gate.py" --base "$BASE" --branch "$BRANCH" --author "$AUTHOR" --config "$RUNNER_TEMP/gate-config.yaml" --main-policy "$RUNNER_TEMP/main-policy.yaml" --stamp-file "$RUNNER_TEMP/airlock-stamp.json" --pr-file "$RUNNER_TEMP/gate-pr.json" --json $APPROVED > "$RUNNER_TEMP/gate.json"
+        code=$?
+        echo "exit=$code" >> "$GITHUB_OUTPUT"
+        case "$code" in 0) echo "passed=true" >> "$GITHUB_OUTPUT" ;; 1) echo "passed=false" >> "$GITHUB_OUTPUT" ;; esac
+        python -I - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+        import json, os, sys; sys.path.insert(0, os.environ["GATE"]); from gate import verdict_line
+        g = json.load(open(os.environ["RUNNER_TEMP"] + "/gate.json"))
+        print(f"## autonomy gate: {g['level']} ({'agent' if g['agent'] else 'human'} PR, {g['changed']} files)\n")
+        for r in g["reasons"]: print(f"- {r}")
+        print("\n" + verdict_line(g))
+        PY
+        echo "level=$(python -I -c 'import json,os;print(json.load(open(os.environ["RUNNER_TEMP"]+"/gate.json"))["level"])')" >> "$GITHUB_OUTPUT"
+    - name: label
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        LEVEL: ${{ steps.gate.outputs.level }}
+        PR: ${{ github.event.pull_request.number }}
+        REPO: ${{ github.repository }}
+      run: |
+        for l in L1 L2 L3 L4; do
+          [ "$l" = "$LEVEL" ] || gh api -X DELETE "repos/$REPO/issues/$PR/labels/level:$l" >/dev/null 2>&1 || true
+        done
+        gh api -X POST "repos/$REPO/issues/$PR/labels" -f "labels[]=level:$LEVEL" >/dev/null
+    # GitHub keeps one row per event, so an approval's green row used to sit beside the push's stale red one
+    # (autonomy#157). The push-time job is re-run when this verdict differs; this job still ends on its own verdict,
+    # since a green row named autonomy-gate passes the required check whatever the other row says.
+    - name: re-run the push-time check
+      if: github.event_name == 'pull_request_review' && steps.gate.outputs.passed != ''
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        REPO: ${{ github.repository }}
+        HEAD: ${{ github.event.pull_request.head.sha }}
+        RUN_ID: ${{ github.run_id }}
+        PASSED: ${{ steps.gate.outputs.passed }}
+        WAIT: ${{ inputs.rerun-wait-seconds }}
+        GATE: ${{ github.action_path }}
+      run: python -I "$GATE/rerun.py" --job autonomy-gate --passed "$PASSED" --wait-seconds "$WAIT"
+    - name: verdict
+      shell: bash
+      env:
+        EXIT: ${{ steps.gate.outputs.exit }}
+        GATE: ${{ github.action_path }}
+      run: |
+        # A failing gate says why on the Checks tab, as an error annotation, not only in the job summary
+        # (Matthew 2026-10-30). No exit code means the gate never ran to the end: that fails too.
+        if [ "${EXIT:-}" != 0 ]; then
+          python -I - <<'PY' || echo "::error title=autonomy gate::the gate stopped before a verdict (exit ${EXIT:-none}); the compute level step's log says where"
+        import json, os, sys; sys.path.insert(0, os.environ["GATE"]); from gate import annotation
+        print(annotation(json.load(open(os.environ["RUNNER_TEMP"] + "/gate.json"))))
+        PY
+        fi
+        exit "${EXIT:-1}"

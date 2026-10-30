@@ -1,0 +1,48 @@
+schema: 1
+repo: acme/infra
+owner_role: ops-engineer
+default: L2
+actions:
+  spend: L2
+  delete_data: L1
+  change_policy: L2
+paths:
+  # Terraform at the repo root; files, not directories.
+  - glob: "dns.tf"
+    level: L1
+    why: Cloudflare DNS.
+  - glob: "dmarc.tf"
+    level: L1
+    why: Mail authentication records.
+  - glob: "backend.tf"
+    level: L1
+    why: Terraform state backend.
+  - glob: "providers.tf"
+    level: L1
+    why: Cloud credentials and provider auth.
+  - glob: "spaces.tf"
+    level: L1
+    why: Buckets and backups.
+  - glob: "github-s3-deployer.tf"
+    level: L1
+    why: Deploy credentials.
+  - glob: "ci.tf"
+    level: L1
+    why: CI runner credentials.
+  - glob: "ci-runners-aws.tf"
+    level: L1
+    why: CI runner credentials and IAM roles; runs pull-request code.
+  - glob: "clock.tf"
+    level: L1
+    why: The clock's IAM roles and its GitHub App key; it starts every scheduled agent run.
+  - glob: "lambda/clock/**"
+    level: L1
+    why: The clock's code, which holds the App key at run time.
+  - glob: "messaging.tf"
+    level: L2
+    why: SES and SMS resources; sending floor.
+digest: friday
+
+# Permanent floors from the charter (cannot be loosened here):
+#   Capcom send/consent/suppression L2 · Academy publish/email L2 · Parlor payments/deposits/SMS L2
+#   LunarMD EHI L1 · secrets/DNS/backups/cluster auth L1 · deleting customer data L1

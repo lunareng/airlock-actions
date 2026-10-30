@@ -1,0 +1,27 @@
+schema: 1
+repo: acme/lunar-cli
+owner_role: cli-engineer
+default: L4
+actions:
+  send: L2
+  spend: L2
+  delete_data: L1
+  touch_ehi: L1
+  change_policy: L2
+judge:
+  metric: test_pass_rate_and_dev_up_seconds
+  source: "ci:cargo-test + ci:bench-dev-up"
+  pass: ">= 1.0 pass and <= 30s"
+  check:   # bench-dev-up has no workflow yet: the check names the file it must live in (autonomy#110)
+    - {repo: acme/lunar-cli, workflow: ci.yml, branch: main, max_age_days: 7}
+    - {repo: acme/lunar-cli, workflow: bench-dev-up.yml, branch: main, max_age_days: 7}
+goals: GOALS.md
+digest: monthly
+budget:
+  prs_in_flight: 2
+  prs_per_week: 5
+  spend_usd: 100
+
+# Permanent floors from the charter (cannot be loosened here):
+#   Capcom send/consent/suppression L2 · Academy publish/email L2 · Parlor payments/deposits/SMS L2
+#   LunarMD EHI L1 · secrets/DNS/backups/cluster auth L1 · deleting customer data L1
