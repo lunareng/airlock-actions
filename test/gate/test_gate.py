@@ -338,5 +338,40 @@ assert verdict_line(dict(g, credited=False)).startswith("Verdict: Airlock credit
 assert annotation({k: v for k, v in g.items() if k != "level_reasons"}), "a result from an older gate.py still annotates"
 print("ok  a failing gate's annotation says why")
 
+# The PR's checkout is the gate job's working directory, so nothing the gate runs may import from it: every Python
+# call is isolated (-I), and a module a PR plants there never runs (security review, 2026-10-30).
+import re as _re  # noqa: E402
+action_text = (ROOT / 'gate/action.yml').read_text()
+assert not _re.search(r"\bpython (?!-I)", action_text), "every python in the action runs isolated (-I)"
+with tempfile.TemporaryDirectory() as d:
+    Path(d, "json.py").write_text("open('planted', 'w').write('ran')\n")
+    subprocess.run([sys.executable, "-c", "import json"], cwd=d, check=True)
+    assert Path(d, "planted").exists(), "without -I, a planted json.py runs"
+    Path(d, "planted").unlink()
+    subprocess.run([sys.executable, "-I", "-c", "import json"], cwd=d, check=True)
+    assert not Path(d, "planted").exists(), "-I keeps it from running"
+print("ok  a module the PR plants in its checkout never runs in the gate")
+
+# The owner's latest review is read across every page: a CHANGES_REQUESTED on page 2 cancels an APPROVED on page 1.
+assert '--paginate "repos/$REPO/pulls/$PR/reviews?per_page=100"' in action_text and "tail -n 1" in action_text
+print("ok  the owner's latest review is read across every page")
+
+# A file moved off a strict path is scored at that path: rename detection would show only where it landed.
+with tempfile.TemporaryDirectory() as d:
+    run = lambda *a: subprocess.run(a, cwd=d, check=True, capture_output=True, text=True)  # noqa: E731
+    run("git", "init", "-q", "-b", "main")
+    Path(d, "AUTONOMY.yaml").write_text("default: L3\npaths:\n  - glob: secrets/**\n    level: L1\n")
+    Path(d, "secrets").mkdir()
+    Path(d, "secrets", "key.txt").write_text("a fairly long file so git sees the move as a rename\n" * 5)
+    run("git", "add", "-A")
+    run("git", "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", "base")
+    Path(d, "cfg.yaml").write_text("agent_markers: {logins: []}\n")
+    run("git", "mv", "secrets/key.txt", "docs-key.txt")
+    run("git", "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", "move")
+    r = subprocess.run([sys.executable, str(ROOT / 'gate/gate.py'), "--base", "HEAD~1", "--json", "--config", str(Path(d, "cfg.yaml"))], cwd=d, capture_output=True, text=True)
+    out = json.loads(r.stdout)
+    assert out["level"] == "L1" and any("secrets/key.txt" in x for x in out["reasons"]), out
+print("ok  a file moved off a strict path scores that path")
+
 print(f"{'FAIL' if failed else 'OK'}: {failed} failing case(s)")
 sys.exit(1 if failed else 0)

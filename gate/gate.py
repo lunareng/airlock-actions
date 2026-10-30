@@ -304,7 +304,8 @@ def annotation(g: dict, shown: int = 5) -> str:
 
 
 def changed_files(base: str) -> list[str]:
-    out = subprocess.check_output(["git", "diff", "--name-only", f"{base}...HEAD"], text=True)
+    # --no-renames: a file moved off a strict path is scored at that path too, not only where it landed.
+    out = subprocess.check_output(["git", "diff", "--name-only", "--no-renames", f"{base}...HEAD"], text=True)
     return [line for line in out.splitlines() if line.strip()]
 
 
