@@ -98,6 +98,21 @@ def only_tightens(before: dict | None, after: dict) -> bool:
     return all(RANK[v] <= RANK[b[k]] for k, v in a.items() if k in b)
 
 
+def shown(path: str) -> str:
+    """A path as the reasons show it. It is matched exactly as git stores it, but a control character or a byte that
+    isn't UTF-8 is shown escaped (\\n, \\x1b), so a file name can't add a line to the job summary or the log."""
+    out = []
+    for c in path:
+        o = ord(c)
+        if 0xDC80 <= o <= 0xDCFF:  # a byte that isn't UTF-8, as surrogateescape decoded it
+            out.append(f"\\x{o - 0xDC00:02x}")
+        elif not c.isprintable():
+            out.append(f"\\x{o:02x}" if o < 0x100 else f"\\u{o:04x}")
+        else:
+            out.append(c)
+    return "".join(out)
+
+
 def effective_level(policy: dict, changed_paths: list[str], base_policy: dict | None = None) -> tuple[str, list[str]]:
     level = policy.get("default", "L2")
     reasons = [f"default {level}"]
@@ -110,12 +125,12 @@ def effective_level(policy: dict, changed_paths: list[str], base_policy: dict | 
         if hit and RANK[hit["level"]] < RANK[level]:
             level = hit["level"]
         if hit:
-            reasons.append(f"{path}: {hit['level']} ({hit['glob']})")
+            reasons.append(f"{shown(path)}: {hit['level']} ({hit['glob']})")
         low = path.lower()
         for key, floor in PATH_FLOORS.items():
             if key in low and RANK[floor] < RANK[level]:
                 level = floor
-                reasons.append(f"{path}: floor {floor} ('{key}')")
+                reasons.append(f"{shown(path)}: floor {floor} ('{key}')")
         if path in ("AUTONOMY.yaml",):
             if only_tightens(base_policy, policy):
                 reasons.append("AUTONOMY.yaml: tightening only; merges at the level the rest of the diff computes")
