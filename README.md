@@ -169,6 +169,86 @@ jobs:
 
 Output `problems`: how many it found.
 
+## The review
+
+`lunareng/airlock-actions/review` has Claude review each pull request against the autonomy charter: signal, intent, floors, proof, secrets and goals. The review's last line is its verdict on the PR's head commit, and the action turns that verdict into the job's result, so the `claude-review` check is one your branch protection can require. `lunareng/airlock-actions/review/security` runs an advisory `/security-review`. Both are composite actions, so the checks keep your jobs' names.
+
+The verdict binds only agents' PRs. An agent's PR passes on a PASS for its current commit, or on a person's approving review of that commit. Anyone else's PR gets the verdict as a warning, because the person who merges it is its reviewer.
+
+```yaml
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  pull_request_review:
+    types: [submitted, dismissed]
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  id-token: write
+jobs:
+  review:
+    name: claude-review
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: lunareng/airlock-actions/review@<release commit>
+        with:
+          claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+  security:
+    name: claude-security-review
+    if: ${{ github.event_name == 'pull_request' && !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: lunareng/airlock-actions/review/security@<release commit>
+        with:
+          claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+```
+
+| Input | Default | |
+| --- | --- | --- |
+| `claude-code-oauth-token` | | Required: the token Claude Code runs on. |
+| `agent-logins` | `*[bot]` | The logins whose PRs the verdict binds. `*` is the only wildcard. (review only) |
+| `human-owner` | `the human owner` | How the reviewer names who merges L1/L2 PRs. (review only) |
+| `model` | `claude-opus-5-5` | The model the review runs on. |
+
+## Validate
+
+`lunareng/airlock-actions/validate` checks your policy repo on its pull requests. It covers every `repos/*.yaml`, `AUTONOMY.yaml` and `roles/*/role.yaml`, against two things:
+- **the schemas Airlock publishes,** fetched at run time, so your repo keeps no copy;
+- **the rules every tenant shares:**
+  - no action or path above the charter's floors;
+  - carve-outs only tighten;
+  - each repository file names its own repository;
+  - a role's repositories are your organization's, and the ones it writes to have a policy file;
+  - a role's brief and goals exist;
+  - an L4 judge runs in CI, with a check.
+
+Each problem is an error annotation on its file and line. With `base`, a level loosened since that commit, or a removed carve-out, is a problem too: a loosening waits for your human owner.
+
+```yaml
+on: pull_request
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: lunareng/airlock-actions/validate@v1
+        with:
+          base: ${{ github.event.pull_request.base.sha }}
+```
+
+| Input | Default | |
+| --- | --- | --- |
+| `airlock-url` | `https://airlock.lunareng.com` | Where the schemas are published. |
+| `base` | `""` | A commit to compare levels with; any loosening since it is a problem. |
+
+Output `problems`: how many it found.
+
 ## The review workflow
 
 `lunareng/airlock-actions/.github/workflows/review.yml` has Claude review each pull request against the autonomy charter: signal, intent, floors, proof, secrets and goals. The review's last line is its verdict on the PR's head commit, and its `claude-review` job turns that verdict into a check your branch protection can require. It also runs an advisory `/security-review`.

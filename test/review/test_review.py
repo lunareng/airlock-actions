@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The review reusable workflow (.github/workflows/review.yml): its verdict step run as written, against a stand-in
+"""The review composite action (review/action.yml, with review/security/): its verdict step run as written, against a stand-in
 `gh` that answers from canned reviews and comments through the real jq, and the rules its file must keep.
 Run: python3 test/review/test_review.py (needs pyyaml, jq and git)."""
 import json
@@ -13,8 +13,9 @@ from pathlib import Path
 import yaml
 
 ROOT = Path(__file__).resolve().parent.parent.parent
-WF = yaml.safe_load((ROOT / ".github" / "workflows" / "review.yml").read_text())
-VERDICT = next(s for s in WF["jobs"]["review"]["steps"] if s.get("name") == "verdict")["run"]
+REVIEW = yaml.safe_load((ROOT / "review" / "action.yml").read_text())
+SECURITY = yaml.safe_load((ROOT / "review" / "security" / "action.yml").read_text())
+VERDICT = next(s for s in REVIEW["runs"]["steps"] if s.get("name") == "verdict")["run"]
 SHA = "a" * 40
 
 # A stand-in gh: `gh api [--paginate] <path> --jq <expr>` answers the canned JSON for the path's kind through jq.
@@ -103,8 +104,8 @@ r = verdict("someone", workflow_change=True)
 assert r.returncode == 0 and "the person merging it is its reviewer" in r.stdout
 print("ok  a workflow change: an agent's needs a person's approval on this commit; a person's own passes")
 
-for job in WF["jobs"].values():
-    for s in job["steps"]:
+for action in (REVIEW, SECURITY):
+    for s in action["runs"]["steps"]:
         if "uses" in s:
             assert re.fullmatch(r"[\w.-]+/[\w./-]+@[0-9a-f]{40}", s["uses"]), s["uses"]
         assert "${{" not in s.get("run", ""), f"{s.get('name') or s.get('id')}: an expression in a script is an injection; pass it in env"
