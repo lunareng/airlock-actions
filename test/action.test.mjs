@@ -42,8 +42,10 @@ function step(script, { answers = {}, env = {}, state = {} } = {}) {
     };`);
   const output = join(dir, 'output');
   const stateFile = join(dir, 'state');
+  const envFile = join(dir, 'env');
   writeFileSync(output, '');
   writeFileSync(stateFile, '');
+  writeFileSync(envFile, '');
   const r = spawnSync(process.execPath, ['--import', stub, script], {
     env: {
       PATH: process.env.PATH,
@@ -51,6 +53,7 @@ function step(script, { answers = {}, env = {}, state = {} } = {}) {
       ACTIONS_ID_TOKEN_REQUEST_TOKEN: 'req',
       GITHUB_OUTPUT: output,
       GITHUB_STATE: stateFile,
+      GITHUB_ENV: envFile,
       GITHUB_API_URL: 'https://api.github.test',
       INPUT_ROLE: 'triage',
       'INPUT_AIRLOCK-URL': AIRLOCK,
@@ -66,6 +69,7 @@ function step(script, { answers = {}, env = {}, state = {} } = {}) {
     stderr: r.stderr,
     output: kv(output),
     state: kv(stateFile),
+    env: kv(envFile),
     sent: existsSync(sent) ? readFileSync(sent, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : [],
   };
 }
@@ -83,7 +87,7 @@ test('a grant: the token is masked before anything else, then goes to the post s
   const lines = r.stdout.split('\n');
   assert.deepEqual(lines.filter((l) => l.includes(TOKEN)), [`::add-mask::${TOKEN}`]);
   assert.equal(lines[lines.findIndex((l) => l.includes(TOKEN))], `::add-mask::${TOKEN}`);
-  assert.deepEqual(r.output, { token: TOKEN, 'expires-at': '2026-10-30T04:00:00.000Z', sessions: '{}', 'read-token': '' });
+  assert.deepEqual(r.output, { token: TOKEN, 'expires-at': '2026-10-30T04:00:00.000Z', sessions: '{}', 'read-token': '', telemetry: 'false' });
   assert.deepEqual(r.state, { token: TOKEN, origin: AIRLOCK, role: 'triage' });
   assert.match(r.stdout, /Airlock granted: 1 repositories, contents:write pull_requests:write, until 2026-10-30T04:00:00\.000Z/);
 });
@@ -137,8 +141,9 @@ test('a refusal stops the run with Airlock\'s reason and message, and nothing is
 test('shadow is green: what Airlock would hand out is printed, nothing is handed on, the step passes', () => {
   const r = main({ mint: { status: 200, body: { mode: 'shadow', decision: 'would_grant', run: '9.1', grant: granted.body.grant, sessions: { tracker: { audience: 'https://mcp.acme.example', scopes: ['api'], tools: [] } } } } });
   assert.equal(r.code, 0);
-  assert.deepEqual(r.output, {});
+  assert.deepEqual(r.output, { telemetry: 'false' });
   assert.deepEqual(r.state, {});
+  assert.deepEqual(r.env, {});
   assert.match(r.stdout, /Airlock would grant: 1 repositories, contents:write pull_requests:write, and sessions for tracker\. Shadow: nothing was handed out\./);
 });
 
@@ -233,6 +238,82 @@ test('a read-only token that could break the output stops the run; the token sti
 test('a message from Airlock that quotes the token has it cut out of the log', () => {
   const r = main(live({ message: `a token for 1 repository: ${TOKEN}`, reason: 'x' }));
   assert.equal(r.stdout.split('\n').filter((l) => l.includes(TOKEN)).join(), `::add-mask::${TOKEN}`);
+});
+
+// ---------- The run's signal and telemetry ----------
+
+test('signal: what the run was dispatched for goes to Mint with the role; an empty one sends none', () => {
+  const url = 'https://github.com/acme/webapp/issues/12';
+  assert.deepEqual(to(main(live(), { INPUT_SIGNAL: url }), '/v1/mint')[0].body, { role: 'triage', signal: url });
+  assert.deepEqual(to(main(live(), { INPUT_SIGNAL: '' }), '/v1/mint')[0].body, { role: 'triage' });
+});
+
+// Mint's answer when the tenant sends role runs' telemetry to Airlock (lunareng/airlock functions/mint, telemetryEnv).
+const TELEMETRY_TOKEN = 'eyJtelemetry.TESTONLY.session0123456789';
+const TELEMETRY_ENV = {
+  OTEL_LOG_TOOL_DETAILS: '1',
+  CLAUDE_CODE_ENABLE_TELEMETRY: '1',
+  OTEL_LOGS_EXPORTER: 'otlp',
+  OTEL_METRICS_EXPORTER: 'otlp',
+  OTEL_EXPORTER_OTLP_PROTOCOL: 'http/json',
+  OTEL_EXPORTER_OTLP_ENDPOINT: `${AIRLOCK}/v1/otlp`,
+  OTEL_EXPORTER_OTLP_HEADERS: `Authorization=Bearer ${TELEMETRY_TOKEN}`,
+  OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE: 'cumulative',
+};
+const telemetry = (env = TELEMETRY_ENV, token = TELEMETRY_TOKEN) => ({ telemetry: { token, expiresAt: '2026-10-30T04:00:00.000Z', env } });
+
+test('telemetry by default: Mint\'s telemetry env goes to every later step, its session masked before anything else', () => {
+  const r = main(live(telemetry()));
+  assert.equal(r.code, 0, r.stdout);
+  assert.deepEqual(r.env, TELEMETRY_ENV);
+  assert.equal(r.output.telemetry, 'true');
+  assert.equal(r.output.token, TOKEN);
+  const lines = r.stdout.split('\n');
+  assert.deepEqual(lines.filter((l) => l.includes(TELEMETRY_TOKEN)), [`::add-mask::${TELEMETRY_TOKEN}`]);
+  assert.match(r.stdout, /Airlock telemetry: exported to the later steps, until 2026-10-30T04:00:00\.000Z/);
+});
+
+test('telemetry in shadow: the run gets nothing but its telemetry, and the step passes', () => {
+  const r = main({ mint: { status: 200, body: { mode: 'shadow', decision: 'would_grant', run: '9.1', grant: granted.body.grant, sessions: {}, ...telemetry() } } });
+  assert.equal(r.code, 0, r.stdout);
+  assert.deepEqual(r.env, TELEMETRY_ENV);
+  assert.deepEqual(r.output, { telemetry: 'true' });
+  assert.deepEqual(r.state, {});
+  assert.deepEqual(r.stdout.split('\n').filter((l) => l.includes(TELEMETRY_TOKEN)), [`::add-mask::${TELEMETRY_TOKEN}`]);
+  assert.match(r.stdout, /Shadow: nothing was handed out but its telemetry\./);
+});
+
+test('telemetry is only Claude Code\'s own variables, sent only to Airlock: anything else exports nothing, and the run goes on', () => {
+  const unsafe = {
+    'another variable': { ...TELEMETRY_ENV, NODE_OPTIONS: '--require /tmp/x.js' },
+    'a path': { ...TELEMETRY_ENV, PATH: '/tmp' },
+    'an endpoint elsewhere': { ...TELEMETRY_ENV, OTEL_EXPORTER_OTLP_ENDPOINT: 'https://collector.example/v1/otlp' },
+    'a logs endpoint elsewhere': { ...TELEMETRY_ENV, OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: 'https://collector.example/v1/logs' },
+    'no endpoint': Object.fromEntries(Object.entries(TELEMETRY_ENV).filter(([k]) => k !== 'OTEL_EXPORTER_OTLP_ENDPOINT')),
+    'a value over two lines': { ...TELEMETRY_ENV, OTEL_LOGS_EXPORTER: 'otlp\nNODE_OPTIONS=--require /tmp/x.js' },
+    'a value that isn\'t text': { ...TELEMETRY_ENV, OTEL_LOGS_EXPORTER: 1 },
+    'no variables': {},
+  };
+  for (const [name, env] of Object.entries(unsafe)) {
+    const r = main(live(telemetry(env)));
+    assert.equal(r.code, 0, name);
+    assert.deepEqual(r.env, {}, name);
+    assert.equal(r.output.telemetry, 'false', name);
+    assert.equal(r.output.token, TOKEN, name);
+    assert.match(r.stdout, /::warning::Airlock: the telemetry env holds something this step won't export/, name);
+    assert.ok(!r.stdout.split('\n').some((l) => l.includes(TELEMETRY_TOKEN) && !l.startsWith('::add-mask::')), name);
+  }
+  const bad = main(live(telemetry(TELEMETRY_ENV, 'eyJ bad\ntoken-0123456789')));
+  assert.deepEqual(bad.env, {});
+  assert.equal(bad.output.telemetry, 'false');
+});
+
+test('telemetry with no GITHUB_ENV to write to is not exported; the run still gets its token', () => {
+  const r = main(live(telemetry()), { GITHUB_ENV: '' });
+  assert.equal(r.code, 0, r.stdout);
+  assert.deepEqual(r.env, {});
+  assert.equal(r.output.telemetry, 'false');
+  assert.equal(r.output.token, TOKEN);
 });
 
 // ---------- The post step ----------
@@ -335,7 +416,7 @@ test('action.yml: the post step runs on success, failure and cancel, on the Node
 });
 
 test('action.yml declares exactly the inputs the steps read and the outputs the main step writes', () => {
-  assert.deepEqual(section('inputs'), ['role', 'airlock-url']);
+  assert.deepEqual(section('inputs'), ['role', 'signal', 'airlock-url']);
   assert.deepEqual(section('outputs'), Object.keys(main(withRead()).output));
   assert.match(yml, /^ {4}default: https:\/\/airlock\.lunareng\.com$/m);
 });

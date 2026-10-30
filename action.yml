@@ -1,9 +1,10 @@
 # lunareng/airlock-actions@v1: one role run's key from Airlock (lunareng/airlock#41). The main step proves the run
 # with the job's GitHub OIDC token, gets its token and MCP sessions from POST /v1/mint and masks them; the post
-# step hands the token back through POST /v1/revoke whatever happened to the job. No dependencies: src/ is what
+# step hands the token back through POST /v1/revoke whatever happened to the job. When the tenant sends role runs'
+# telemetry to Airlock, Claude Code's telemetry env goes to every later step: telemetry by default. No dependencies: src/ is what
 # runs, so there is no build and no dist/ to drift from it.
 name: Airlock
-description: Gets this run's GitHub token and MCP sessions from Airlock, and hands the token back when the job ends.
+description: Gets this run's GitHub token, MCP sessions and Claude Code telemetry from Airlock, and hands the token back when the job ends.
 author: Lunar Engineering
 branding:
   icon: lock
@@ -12,6 +13,10 @@ inputs:
   role:
     description: "The role this run is: the {role} in your policy repo's roles/{role}/role.yaml and .github/workflows/role-{role}.yml."
     required: true
+  signal:
+    description: "What the run was dispatched for: an issue or pull request URL in your organization. Recorded for the run's report; empty sends none."
+    required: false
+    default: ""
   airlock-url:
     description: "Airlock's origin. Also the audience of the OIDC token the action requests."
     required: false
@@ -25,6 +30,8 @@ outputs:
     description: "The run's MCP sessions as JSON, one per server in the file's run.mcp, keyed by connector: each with its audience, token, expiresAt, scopes and tools."
   read-token:
     description: "A token that can only read the repositories the file's run.clone names and its writes don't, masked; empty when there are none. The post step ends it."
+  telemetry:
+    description: "true when Claude Code's telemetry env, with this run's own telemetry session (masked), was exported to every later step; false when the tenant's telemetry is off."
 runs:
   using: node24
   main: src/main.mjs

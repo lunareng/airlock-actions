@@ -22,6 +22,7 @@ jobs:
         id: airlock
         with:
           role: triage
+          signal: ${{ inputs.signal }} # the issue or pull request the run was dispatched for, for its report
       - name: run the agent
         if: steps.airlock.outputs.token != '' # empty while the role is in shadow
         env:
@@ -31,6 +32,7 @@ jobs:
 ```
 
 - **The main step** proves the run with the job's GitHub OIDC token and asks Airlock for the role's token. It masks the token, the sessions and any read-only token before anything else, and hands them to later steps only as outputs.
+- **Telemetry, by default:** when your tenant sends role runs' telemetry to Airlock (one switch in Airlock's Telemetry settings, with a per-role opt-out), Airlock's answer carries Claude Code's telemetry env with a session for this run alone. The step masks the session and exports the env to every later step, live or shadow, so Claude Code sends the run's cost, tokens and tool use to Airlock with nothing to configure. It exports only `CLAUDE_CODE_ENABLE_TELEMETRY` and `OTEL_*` variables, and only to Airlock's own `/v1/otlp`; anything else, and the run goes on without telemetry.
 - **The post step** runs on success, failure and cancel. It hands the token back to Airlock and ends the read-only token at GitHub. It never fails the job: if it can't reach Airlock, it says so, and the token ends with its hour.
 - **In shadow** (any role whose file doesn't say `identity.key_store: airlock`), the step passes, prints what Airlock would have handed out, and leaves `token` empty. Turning the role live changes nothing in this file.
 - **A refusal** fails the step with Airlock's reason and message. Each reason is listed at https://airlock.lunareng.com/docs/refusals.
@@ -40,6 +42,7 @@ jobs:
 | Input | Required | Default | What it is |
 | --- | --- | --- | --- |
 | `role` | Yes | | The role this run is: the `{role}` in `roles/{role}/role.yaml` and `.github/workflows/role-{role}.yml`. |
+| `signal` | No | | What the run was dispatched for: an issue or pull request URL in your organization. Recorded for the run's report. |
 | `airlock-url` | No | `https://airlock.lunareng.com` | Airlock's origin, and the audience of the OIDC token the action requests. |
 
 | Output | What it is |
@@ -48,6 +51,7 @@ jobs:
 | `expires-at` | When the token expires (ISO 8601). |
 | `sessions` | The run's MCP sessions as JSON, keyed by connector: `fromJSON(steps.airlock.outputs.sessions).<connector>.token`. |
 | `read-token` | A token that can only read the repositories the file's `run.clone` names and its writes don't. Empty when there are none. |
+| `telemetry` | `true` when Claude Code's telemetry env was exported to the later steps; `false` when the tenant's telemetry is off. |
 
 ## Versions
 
