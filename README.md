@@ -91,6 +91,46 @@ jobs:
 | --- | --- |
 | `level` | The PR's level, `L1` to `L4`. |
 | `passed` | `true` or `false` once the level is computed; empty if the gate stopped before. |
+## The role workflow
+
+`lunareng/airlock-actions/.github/workflows/role.yml` is one whole role run, so a role's workflow in your policy repo is only its triggers and this call. It reads `roles/<role>/role.yaml` at the run's commit:
+- the run's token, MCP sessions and telemetry from Airlock;
+- the repositories it clones (on its token for those it writes to, on a read-only token for the rest);
+- its model, turns, allowed tools and minutes.
+
+```yaml
+name: role triage
+on:
+  workflow_dispatch:
+    inputs:
+      signal:
+        type: string
+        default: ""
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: role-triage
+jobs:
+  run:
+    uses: lunareng/airlock-actions/.github/workflows/role.yml@v1
+    with:
+      role: triage
+      signal: ${{ inputs.signal }}
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+```
+
+The file must be `.github/workflows/role-<role>.yml` on your policy repo's default branch. Airlock accepts this workflow only at a release tag or a release's commit, never a branch (`workflow_unreleased`).
+
+| Input | Default | |
+| --- | --- | --- |
+| `role` | | The role's name. |
+| `signal` | `""` | A signal URL for the run to lead with. |
+| `runner` | `ubuntu-latest` | The runner label for the run's jobs. |
+| `airlock-url` | `https://airlock.lunareng.com` | Airlock's origin. |
+| `git-email-domain` | `users.noreply.github.com` | Commits are by `<role>@<domain>`. |
+| `claude-code-version` | `2.1.304` | The Claude Code release the run installs. |
 
 ## Versions
 

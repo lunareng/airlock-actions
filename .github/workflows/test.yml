@@ -35,6 +35,7 @@ jobs:
           pip install --quiet pyyaml==6.0.3
           python test/gate/test_gate.py
           python test/gate/test_policy.py
+          python test/role/test_role.py
 
   hand-back:
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
