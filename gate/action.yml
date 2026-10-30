@@ -36,7 +36,7 @@ runs:
       run: |
         pip install --quiet pyyaml
         # Every step runs python -I, which never reads the user site pip falls back to when site-packages isn't writable.
-        python -I -c 'import yaml' || { echo "::error title=autonomy gate::pyyaml isn't importable by an isolated python (pip installed it to the user site?)"; exit 1; }
+        python -I -c 'import yaml' || { echo "::error title=autonomy gate::pyyaml isn't importable by an isolated Python (pip installed it to the user site?)"; exit 1; }
     - name: airlock (a read of the policy repo; no policy, no gate)
       shell: bash
       env:
