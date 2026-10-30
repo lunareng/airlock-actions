@@ -305,8 +305,10 @@ def annotation(g: dict, shown: int = 5) -> str:
 
 def changed_files(base: str) -> list[str]:
     # --no-renames: a file moved off a strict path is scored at that path too, not only where it landed.
-    out = subprocess.check_output(["git", "diff", "--name-only", "--no-renames", f"{base}...HEAD"], text=True)
-    return [line for line in out.splitlines() if line.strip()]
+    # -z and core.quotePath=false: each path exactly as stored. Git otherwise quotes a path with a tab, a newline or a
+    # non-ASCII byte ("secrets/k\303\251y"), which no glob matches, so the file would escape its level.
+    out = subprocess.check_output(["git", "-c", "core.quotePath=false", "diff", "--name-only", "--no-renames", "-z", f"{base}...HEAD"])
+    return [path for path in out.decode("utf-8", "surrogateescape").split("\0") if path]
 
 
 def main() -> int:
