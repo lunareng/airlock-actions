@@ -36,6 +36,8 @@ jobs:
           python test/gate/test_gate.py
           python test/gate/test_policy.py
           python test/role/test_role.py
+          pip install --quiet jsonschema==4.25.1
+          python test/validate/test_validate.py
 
   hand-back:
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository

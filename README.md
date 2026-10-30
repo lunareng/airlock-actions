@@ -132,6 +132,43 @@ The file must be `.github/workflows/role-<role>.yml` on your policy repo's defau
 | `git-email-domain` | `users.noreply.github.com` | Commits are by `<role>@<domain>`. |
 | `claude-code-version` | `2.1.304` | The Claude Code release the run installs. |
 
+## Validate
+
+`lunareng/airlock-actions/validate` checks your policy repo on its pull requests. It covers every `repos/*.yaml`, `AUTONOMY.yaml` and `roles/*/role.yaml`, against two things:
+- **the schemas Airlock publishes,** fetched at run time, so your repo keeps no copy;
+- **the rules every tenant shares:**
+  - no action or path above the charter's floors;
+  - carve-outs only tighten;
+  - each repository file names its own repository;
+  - a role's repositories are your organization's, and the ones it writes to have a policy file;
+  - a role's brief and goals exist;
+  - an L4 judge runs in CI, with a check.
+
+Each problem is an error annotation on its file and line. With `base`, a level loosened since that commit, or a removed carve-out, is a problem too: a loosening waits for your human owner.
+
+```yaml
+on: pull_request
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: lunareng/airlock-actions/validate@v1
+        with:
+          base: ${{ github.event.pull_request.base.sha }}
+```
+
+| Input | Default | |
+| --- | --- | --- |
+| `airlock-url` | `https://airlock.lunareng.com` | Where the schemas are published. |
+| `base` | `""` | A commit to compare levels with; any loosening since it is a problem. |
+
+Output `problems`: how many it found.
+
 ## Versions
 
 Every release has an exact tag (`v1.0.0`) and a major tag (`v1`) that moves to the newest release of that major. Pin `@v1` to follow releases, or a release's full commit SHA to stay put; Dependabot's `github-actions` ecosystem keeps either current. Breaking changes come only in a new major. The action sends its version to Airlock as the `Airlock-Action` header.

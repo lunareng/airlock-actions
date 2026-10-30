@@ -1,0 +1,41 @@
+name: airlock validate
+description: >
+  Check a policy repo's files (repos/*.yaml, AUTONOMY.yaml, roles/*/role.yaml) against the schemas Airlock publishes,
+  fetched at run time, and the charter's rules every tenant shares: floors, carve-outs only tightening, every role's
+  repositories and files. Each problem is an error annotation on its file and line. With `base`, a loosening since
+  that commit is a problem too. Run it in a checkout of the policy repo (fetch-depth 0 when `base` is set).
+inputs:
+  airlock-url:
+    description: Airlock's origin, where the schemas are published
+    default: https://airlock.lunareng.com
+  base:
+    description: "a commit to compare levels with (a PR's base sha): any loosening since it is a problem"
+    default: ""
+outputs:
+  problems:
+    description: how many problems it found
+    value: ${{ steps.check.outputs.problems }}
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      with:
+        python-version: "3.12"
+    - shell: bash
+      run: |
+        pip install --quiet pyyaml==6.0.3 jsonschema==4.25.1
+        # The check runs python -I, which never reads the user site pip falls back to when site-packages isn't writable.
+        python -I -c 'import yaml, jsonschema' || { echo "::error title=airlock validate::pyyaml or jsonschema isn't importable by an isolated Python"; exit 1; }
+    - id: check
+      shell: bash
+      env:
+        AIRLOCK: ${{ inputs.airlock-url }}
+        OWNER: ${{ github.repository_owner }}
+        BASE: ${{ inputs.base }}
+        HERE: ${{ github.action_path }}
+      run: |
+        if [ -n "$BASE" ]; then
+          python -I "$HERE/check.py" --airlock "$AIRLOCK" --owner "$OWNER" --base "$BASE"
+        else
+          python -I "$HERE/check.py" --airlock "$AIRLOCK" --owner "$OWNER"
+        fi
