@@ -8,6 +8,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
+GATE_PY = ROOT / "gate" / "gate.py"
 sys.path.insert(0, str(ROOT / "gate"))
 from gate import airlock_credit, effective_level, is_agent  # noqa: E402
 
@@ -372,6 +373,26 @@ with tempfile.TemporaryDirectory() as d:
     out = json.loads(r.stdout)
     assert out["level"] == "L1" and any("secrets/key.txt" in x for x in out["reasons"]), out
 print("ok  a file moved off a strict path scores that path")
+
+# A path git would quote (a tab, a newline, a non-ASCII name) still matches its glob. billing/** is a carve-out
+# no floor keyword matches, so only the glob can score it.
+with tempfile.TemporaryDirectory() as d:
+    run = lambda *a: subprocess.run(a, cwd=d, check=True, capture_output=True, text=True)  # noqa: E731
+    run("git", "init", "-q", "-b", "main")
+    Path(d, "AUTONOMY.yaml").write_text("default: L3\npaths:\n  - glob: billing/**\n    level: L1\n")
+    Path(d, "cfg.yaml").write_text("agent_markers: {logins: []}\n")
+    run("git", "add", "-A")
+    run("git", "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", "base")
+    for name in ("k\u00e9y.txt", "tab\there.txt", "new\nline.txt"):
+        Path(d, "billing").mkdir(exist_ok=True)
+        Path(d, "billing", name).write_text("x\n")
+        run("git", "add", "-A")
+        run("git", "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", name)
+        r = subprocess.run([sys.executable, str(GATE_PY), "--base", "HEAD~1", "--json", "--config", str(Path(d, "cfg.yaml"))], cwd=d, capture_output=True, text=True)
+        out = json.loads(r.stdout)
+        assert out["level"] == "L1", (name, out)
+        run("git", "reset", "-q", "--hard", "HEAD~1")
+print("ok  a path git would quote still scores by its glob")
 
 print(f"{'FAIL' if failed else 'OK'}: {failed} failing case(s)")
 sys.exit(1 if failed else 0)
