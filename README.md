@@ -53,6 +53,47 @@ jobs:
 | `read-token` | A token that can only read the repositories the file's `run.clone` names and its writes don't. Empty when there are none. |
 | `telemetry` | `true` when Claude Code's telemetry env was exported to the later steps; `false` when the tenant's telemetry is off. |
 
+## The role workflow
+
+`lunareng/airlock-actions/.github/workflows/role.yml` is one whole role run, so a role's workflow in your policy repo is only its triggers and this call. It reads `roles/<role>/role.yaml` at the run's commit:
+- the run's token, MCP sessions and telemetry from Airlock;
+- the repositories it clones (on its token for those it writes to, on a read-only token for the rest);
+- its model, turns, allowed tools and minutes.
+
+```yaml
+name: role triage
+on:
+  workflow_dispatch:
+    inputs:
+      signal:
+        type: string
+        default: ""
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: role-triage
+jobs:
+  run:
+    uses: lunareng/airlock-actions/.github/workflows/role.yml@v1
+    with:
+      role: triage
+      signal: ${{ inputs.signal }}
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+```
+
+The file must be `.github/workflows/role-<role>.yml` on your policy repo's default branch. Airlock accepts this workflow only at a release tag or a release's commit, never a branch (`workflow_unreleased`).
+
+| Input | Default | |
+| --- | --- | --- |
+| `role` | | The role's name. |
+| `signal` | `""` | A signal URL for the run to lead with. |
+| `runner` | `ubuntu-latest` | The runner label for the run's jobs. |
+| `airlock-url` | `https://airlock.lunareng.com` | Airlock's origin. |
+| `git-email-domain` | `users.noreply.github.com` | Commits are by `<role>@<domain>`. |
+| `claude-code-version` | `2.1.304` | The Claude Code release the run installs. |
+
 ## Versions
 
 Every release has an exact tag (`v1.0.0`) and a major tag (`v1`) that moves to the newest release of that major. Pin `@v1` to follow releases, or a release's full commit SHA to stay put; Dependabot's `github-actions` ecosystem keeps either current. Breaking changes come only in a new major. The action sends its version to Airlock as the `Airlock-Action` header.
