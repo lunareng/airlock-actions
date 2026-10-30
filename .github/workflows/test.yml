@@ -3,6 +3,9 @@
 # agent step fails still hands its token back to a stand-in Airlock on 127.0.0.1, and that job's own log, read
 # back from GitHub, shows the token only as ***. Cancel isn't run here: the post step's `post-if: always()`
 # (action.yml, held by npm test) is GitHub's own promise that it runs on cancel too.
+#
+# These jobs run the pull request's own code on the org's self-hosted pool, so they run only for pushes and for
+# pull requests from this repository's branches, never a fork's: the repository is public from its first release.
 name: test
 on:
   pull_request:
@@ -15,6 +18,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   test:
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: lunareng-ci # the org's self-hosted pool (lunareng/k8s infrastructure/arc), which bills no Actions minutes (2026-10-22)
     timeout-minutes: 10
     steps:
@@ -25,6 +29,7 @@ jobs:
       - run: npm test
 
   hand-back:
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: lunareng-ci
     timeout-minutes: 10
     permissions:
