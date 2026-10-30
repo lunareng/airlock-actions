@@ -1,0 +1,18 @@
+schema: 1
+repo: acme/lunar-houston
+owner_role: houston-agent
+default: L3
+actions:
+  send: L2
+  spend: L2
+  delete_data: L1
+  change_policy: L2
+paths:
+  - glob: "src/**/send/**"
+    level: L2
+    why: send is a permanent L2 floor.
+digest: friday
+
+# Permanent floors from the charter (cannot be loosened here):
+#   Capcom send/consent/suppression L2 · Academy publish/email L2 · Parlor payments/deposits/SMS L2
+#   LunarMD EHI L1 · secrets/DNS/backups/cluster auth L1 · deleting customer data L1
