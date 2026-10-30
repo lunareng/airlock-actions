@@ -169,6 +169,37 @@ jobs:
 
 Output `problems`: how many it found.
 
+## The review workflow
+
+`lunareng/airlock-actions/.github/workflows/review.yml` has Claude review each pull request against the autonomy charter: signal, intent, floors, proof, secrets and goals. The review's last line is its verdict on the PR's head commit, and its `claude-review` job turns that verdict into a check your branch protection can require. It also runs an advisory `/security-review`.
+
+The verdict binds only agents' PRs. An agent's PR passes on a PASS for its current commit, or on a person's approving review of that commit. Anyone else's PR gets the verdict as a warning, because the person who merges it is its reviewer.
+
+```yaml
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  pull_request_review:
+    types: [submitted, dismissed]
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  id-token: write
+jobs:
+  review:
+    uses: lunareng/airlock-actions/.github/workflows/review.yml@<release commit>
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+```
+
+| Input | Default | |
+| --- | --- | --- |
+| `runner` | `ubuntu-latest` | The runner label for both jobs. |
+| `agent-logins` | `*[bot]` | The logins whose PRs the verdict binds. `*` is the only wildcard. |
+| `human-owner` | `the human owner` | How the reviewer names who merges L1/L2 PRs. |
+| `model` | `claude-opus-5-5` | The model both reviews run on. |
+
 ## Versions
 
 Every release has an exact tag (`v1.0.0`) and a major tag (`v1`) that moves to the newest release of that major. Pin `@v1` to follow releases, or a release's full commit SHA to stay put; Dependabot's `github-actions` ecosystem keeps either current. Breaking changes come only in a new major. The action sends its version to Airlock as the `Airlock-Action` header.
