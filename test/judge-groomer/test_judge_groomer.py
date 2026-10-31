@@ -10,6 +10,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import urllib.parse
 from pathlib import Path
 
 import yaml
@@ -43,6 +44,10 @@ def judge(*args, answers=None, policy=POLICY, now=NOW):
     except json.JSONDecodeError:
         report = {"stdout": r.stdout, "stderr": r.stderr}
     return r.returncode, report, calls
+
+
+def query(endpoint: str) -> dict:
+    return {k: v[0] for k, v in urllib.parse.parse_qs(endpoint.partition("?")[2]).items()}
 
 
 def edit(fn):
@@ -91,8 +96,11 @@ def main() -> int:
         "open issues over 7 days with no priority label are unranked": rep.get("unranked_over_7d") == 1,
         "demand with a missing field or an old lookup is stale": rep.get("stale_demand") == 2,
         "one pick without a signal fails the judge, exit 1": rc == 1 and rep.get("pass") is False,
-        "the search is scoped to the repository's own owner": any(c[1].startswith("search/issues?") and "q=org:acme+" in c[1] for c in calls)
-            and not any("lunareng" in c[1] for c in calls),
+        "the search is scoped to the repository's own owner, and its quoted #N reaches GitHub whole": any(
+            c[1].startswith("search/issues?") and query(c[1]).get("q", "").startswith("user:acme ") and query(c[1])["q"].endswith('"api#13"')
+            and query(c[1]).get("per_page") == "5" for c in calls) and not any("lunareng" in c[1] for c in calls),
+        "every query value is URL-encoded: no raw # or + reaches gh": not any("#" in c[1] or "+00:00" in c[1] for c in calls)
+            and any(query(c[1]).get("since") == "2026-10-02T12:00:00Z" for c in calls),
         "it only reads: every call is a plain gh api GET": all(c[0] == "api" and len(c) == 2 for c in calls),
     })
 
@@ -136,6 +144,29 @@ def main() -> int:
     rc, rep, _ = judge(answers=edit(broken))
     checks["a GitHub read that keeps failing is unmeasured, exit 2, never a pass"] = rc == 2 and rep.get("pass") is False and "acme/web/pulls" in rep.get("unmeasured", "")
 
+    def not_json(rules):
+        rule(rules, "repos/acme/web/pulls", state="closed")["raw"] = "<html>a proxy's error page</html>"
+    rc, rep, _ = judge(answers=edit(not_json))
+    checks["an answer that isn't JSON is unmeasured, exit 2"] = rc == 2 and rep.get("pass") is False
+
+    def a_string(rules):
+        rule(rules, "repos/acme/web/pulls", state="closed")["answer"] = "not a list"
+    rc, rep, _ = judge(answers=edit(a_string))
+    checks["an answer that is neither a list nor an object is unmeasured, exit 2"] = rc == 2 and rep.get("pass") is False
+
+    # Closed PRs come newest update first: paging stops at the first page that reaches back past the window.
+    def full_page(updated):
+        def fn(rules):
+            r = rule(rules, "repos/acme/web/pulls", state="closed")
+            r["answer"] = r["answer"] + [{"number": 100 + i, "title": "x", "body": "", "merged_at": updated, "updated_at": updated} for i in range(99)]
+        return fn
+    _, rep, calls = judge(answers=edit(full_page("2026-09-01T00:00:00Z")))
+    old_pages = [query(c[1]).get("page") for c in calls if c[1].startswith("repos/acme/web/pulls?")]
+    _, rep2, calls = judge(answers=edit(full_page("2026-10-21T00:00:00Z")))
+    new_pages = [query(c[1]).get("page") for c in calls if c[1].startswith("repos/acme/web/pulls?")]
+    checks["a full page of closed PRs reaching past the window is the last page read"] = old_pages == ["1"] and new_pages == ["1", "2"] \
+        and rep.get("pick_conversion") == 0.75 and rep2.get("pick_conversion") == 0.75
+
     rc, rep, calls = judge(policy=tempfile.mkdtemp())
     checks["no role file is unmeasured, exit 2, and reads nothing"] = rc == 2 and rep.get("pass") is False and calls == []
     rc, rep, calls = judge(policy=policy_with("schema: 1\nrole: groomer\nlevel: L4\nwrites:\n  repos: []\n"))
@@ -146,8 +177,14 @@ def main() -> int:
     checks["a role that isn't a role name is unmeasured, exit 2"] = rc == 2 and calls == []
 
     checks.update({
-        "mentions: #N and repo#N, not another owner's or repo's": j.mentions("Closes #12", "api", 12) and j.mentions("Part of api#12", "api", 12)
-            and not j.mentions("other/api#12", "api", 12) and not j.mentions("web#12", "api", 12) and not j.mentions("#123", "api", 12),
+        "mentions: #N, repo#N, owner/repo#N and the issue's URL": j.mentions("Closes #12", "acme/api", 12)
+            and j.mentions("Part of api#12", "acme/api", 12) and j.mentions("Closes acme/api#12", "acme/api", 12)
+            and j.mentions("Fixes ACME/API#12.", "acme/api", 12) and j.mentions("see https://github.com/acme/api/issues/12", "acme/api", 12),
+        "mentions: not another owner's, another repo's, or another number": not j.mentions("other/api#12", "acme/api", 12)
+            and not j.mentions("web#12", "acme/api", 12) and not j.mentions("acme/web#12", "acme/api", 12)
+            and not j.mentions("my-api#12", "acme/api", 12) and not j.mentions("#123", "acme/api", 12)
+            and not j.mentions("https://github.com/other/api/issues/12", "acme/api", 12)
+            and not j.mentions("https://github.com/acme/api/issues/123", "acme/api", 12),
         "has_signal: a link, an issue reference or #N under ## Signal": j.has_signal("## Signal\nhttps://x.example/1\n")
             and j.has_signal("## Signal\nacme/api#3\n") and j.has_signal("## Signal\n#3\n## Done means\nx")
             and not j.has_signal("## Signal\nsomeone said so\n## Done means\nhttps://x.example/1") and not j.has_signal("no section #3"),
