@@ -22,6 +22,7 @@ import re
 import subprocess
 import sys
 import time
+import urllib.parse
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -36,23 +37,31 @@ class Unmeasured(Exception):
     """The judge could not read what it needs: it reports that and exits 2, never a pass."""
 
 
-def gh(path: str, **params):
-    """GET with manual paging (page=N), since Link headers point at repositories/{id} URLs some proxies refuse."""
+def gh(path: str, until=None, **params):
+    """GET with manual paging (page=N), since Link headers point at repositories/{id} URLs some proxies refuse. Every
+    value is URL-encoded: `gh api` reads the endpoint as a URL, so a raw `#` would cut the query off as a fragment and
+    a raw `+` would reach GitHub as a space. With `until`, paging stops after the first page holding an item it fits."""
     items, page = [], 1
     while True:
-        q = "&".join(f"{k}={v}" for k, v in {**params, "page": page}.items())
+        q = urllib.parse.urlencode({**params, "page": page})
         for attempt in range(3):
             out = subprocess.run(["gh", "api", f"{path}?{q}"], capture_output=True, text=True)
             if out.returncode == 0:
                 break
-            time.sleep(2 * (attempt + 1))
+            if attempt < 2:
+                time.sleep(2 * (attempt + 1))
         else:
             raise Unmeasured(f"gh api {path}: {out.stderr.strip()[:300]}")
-        data = json.loads(out.stdout)
-        if not isinstance(data, list):
+        try:
+            data = json.loads(out.stdout)
+        except json.JSONDecodeError:
+            raise Unmeasured(f"gh api {path}: an answer that isn't JSON")
+        if isinstance(data, dict):
             return data
+        if not isinstance(data, list):
+            raise Unmeasured(f'gh api {path}: an answer that is neither a list nor an object')
         items += data
-        if len(data) < int(params.get("per_page", 30)):
+        if len(data) < int(params.get("per_page", 30)) or (until and any(until(i) for i in data)):
             return items
         page += 1
 
@@ -68,7 +77,7 @@ def label_names(issue) -> set[str]:
 def pick_events(repo: str, since: datetime, pick_label: str):
     """(issue, labeled_at) for every pick-label labelling since `since`."""
     picks = []
-    issues = gh(f"repos/{repo}/issues", state="all", since=since.isoformat(), per_page=100)
+    issues = gh(f"repos/{repo}/issues", state="all", since=since.strftime("%Y-%m-%dT%H:%M:%SZ"), per_page=100)
     for issue in issues:
         if "pull_request" in issue:
             continue
@@ -85,13 +94,21 @@ _merged: dict[str, list] = {}
 def merged_prs(repo: str, since: datetime) -> list:
     """Merged PRs in `repo` updated since `since` (cached per repo)."""
     if repo not in _merged:
-        prs = gh(f"repos/{repo}/pulls", state="closed", sort="updated", direction="desc", per_page=100)
+        # Newest update first, so paging stops at the first page that reaches back past `since`.
+        prs = gh(f"repos/{repo}/pulls", until=lambda pr: ts(pr["updated_at"]) < since,
+                 state="closed", sort="updated", direction="desc", per_page=100)
         _merged[repo] = [pr for pr in prs if pr.get("merged_at") and ts(pr["updated_at"]) >= since]
     return _merged[repo]
 
 
-def mentions(text: str, short: str, number: int) -> bool:
-    return bool(re.search(rf"(?<![\w/]){re.escape(short)}#{number}\b|(?<![\w/#]){'#'}{number}\b", text or ""))
+def mentions(text: str, repo: str, number: int) -> bool:
+    """Whether a PR's text names issue `number` of `repo` (owner/name): `#N`, `name#N`, `owner/name#N`, or the issue's
+    URL. Another owner's `other/name#N`, or another repository's `web#N`, is not it."""
+    owner, short = (re.escape(p) for p in repo.split("/"))
+    return bool(re.search(
+        rf"(?<![\w/.-])(?:{owner}/)?{short}#{number}\b"
+        rf"|(?<![\w/#]){'#'}{number}\b"
+        rf"|github\.com/{owner}/{short}/issues/{number}\b", text or "", re.I))
 
 
 def merged_pr_for(repo: str, number: int, after: datetime, before: datetime, since: datetime) -> bool:
@@ -99,14 +116,15 @@ def merged_pr_for(repo: str, number: int, after: datetime, before: datetime, sin
     rest of its owner's repositories through search, when the token allows it (CI does; some proxies don't)."""
     owner, short = repo.split("/")
     for pr in merged_prs(repo, since):
-        if after <= ts(pr["merged_at"]) <= before and mentions((pr.get("title") or "") + "\n" + (pr.get("body") or ""), short, number):
+        if after <= ts(pr["merged_at"]) <= before and mentions((pr.get("title") or "") + "\n" + (pr.get("body") or ""), repo, number):
             return True
-    q = f'org:{owner} is:pr is:merged merged:{after.date()}..{before.date()} "{short}#{number}"'
+    # user: is any account, an organization or a person (org: is a 422 for a person's repositories).
+    q = f'user:{owner} is:pr is:merged merged:{after.date()}..{before.date()} "{short}#{number}"'
     try:
-        res = gh("search/issues", q=q.replace(" ", "+"), per_page=5)
+        res = gh("search/issues", q=q, per_page=5)
     except Unmeasured:
         return False  # not converted: a search the token can't make never makes a pick look done
-    return any(mentions((it.get("title") or "") + "\n" + (it.get("body") or ""), short, number) for it in res.get("items", []))
+    return any(mentions((it.get("title") or "") + "\n" + (it.get("body") or ""), repo, number) for it in res.get("items", []))
 
 
 def has_signal(body: str) -> bool:
