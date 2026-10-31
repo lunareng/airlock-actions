@@ -514,7 +514,17 @@ assert any("unknown key `tool_request`" in p for p in _p(tool_request=["acme/api
 assert any("`tool_requests` has no value" in p for p in _p(tool_requests=None)), "a key with no value is a problem, not a TypeError"
 assert any("`reviews` is a list" in p for p in _p(reviews="acme/api")), "a string where a list goes"
 assert any("`ci_main` is a mapping" in p for p in _p(ci_main=["acme/api"]))
-assert not any("not a repository of" in p for p in _p(reviews=[*RCFG["reviews"], "ACME/api"])), "organization names are case-insensitive"
+assert any("write the organization as acme" in p for p in _p(reviews=[*RCFG["reviews"], "ACME/api"])), \
+    "every rule compares repos exactly, so the organization is written as GITHUB_REPOSITORY writes it"
+assert any("has None, not an owner/name" in p for p in _p(tool_requests=["acme/api", None])), "a list item with no value"
+assert any("has {'a': 1}" in p for p in _p(reviews=[{"a": 1}])), "a mapping where a repo goes"
+assert any("`product_bugs.sim_repos` is a mapping" in p for p in _p(product_bugs={"repos": ["acme/api"], "sim_repos": ["sim-shop"]}))
+assert any("maps 'sim-shop' to None" in p for p in _p(product_bugs={"repos": ["acme/api"], "sim_repos": {"sim-shop": None}}))
+assert any("`pr_budget` is a number" in p for p in _p(pr_budget=True)) and any("`pr_budget` is a number" in p for p in _p(pr_budget="2"))
+assert not _p(pr_budget=3) and not _p(pr_budget={"default": 1})
+assert any("`delivered` is true" in p for p in _p(delivered={"backfill": ["soon"]})) and not _p(delivered=True)
+_both = _p(tool_request=["acme/api"], reviews=[r for r in RCFG["reviews"] if r != "acme/station"], tool_requests=[r for r in RCFG["tool_requests"] if r != "acme/station"])
+assert any("unknown key" in p for p in _both) and any("acme/station is in no router.yaml list" in p for p in _both), "an unknown key hides no other problem"
 import contextlib as _ctx, io as _io, os as _os, tempfile as _tmp  # noqa: E401,E402
 for _bad in ("", "acme", "acme/policy/x", "../x"):
     try:

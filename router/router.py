@@ -461,33 +461,83 @@ def without_repos(cfg: dict, skip: set[str]) -> dict:
     return out
 
 
+KNOWN_KEYS = {"product_bugs", "tool_requests", "tool_request_label", "reviews", "delivered", "resume", "pr_budget", "digest_answers",
+              "override", "deployer_login", "clock_login", "gate_rerun", "run_failed", "ci_main"}
+
+
+def shape_problems(cfg: dict) -> list[str]:
+    """router.yaml's shape: every key known and with a value, every list a list of `owner/name` strings in the
+    tenant's organization (written as GITHUB_REPOSITORY writes it, since every rule compares repos exactly), every
+    mapping a mapping of strings."""
+    out = [f"router.yaml: `{k}` has no value (leave the key out to turn its rule off)" for k in sorted(set(cfg) & KNOWN_KEYS) if cfg[k] is None]
+
+    def mapping(key: str, v) -> bool:
+        if v is not None and not isinstance(v, dict):
+            out.append(f"router.yaml: `{key}` is a mapping")
+            return False
+        return v is not None
+
+    def repos(key: str, v) -> None:
+        if v is None:
+            return
+        if not isinstance(v, list):
+            out.append(f"router.yaml: `{key}` is a list of repositories")
+            return
+        for r in v:
+            if not (isinstance(r, str) and REPO_RE.fullmatch(r)):
+                out.append(f"router.yaml: `{key}` has {r!r}, not an owner/name repository")
+            elif r.split("/", 1)[0] != ORG:
+                out.append(f"router.yaml: {r} is not a repository of {ORG} (write the organization as {ORG})")
+
+    def strings(key: str, v: dict) -> None:
+        out.extend(f"router.yaml: `{key}` maps {k!r} to {x!r}: both are strings" for k, x in v.items()
+                   if not (isinstance(k, str) and isinstance(x, str) and x))
+
+    for key in ("tool_requests", "reviews", "run_failed"):
+        repos(key, cfg.get(key))
+    if "product_bugs" in cfg and cfg["product_bugs"] is not None and not isinstance(cfg["product_bugs"], dict):
+        out.append("router.yaml: product_bugs is {repos: [...], sim_repos: {<sim repo>: <product label>}}, not a list")
+    elif mapping("product_bugs", cfg.get("product_bugs")):
+        repos("product_bugs.repos", cfg["product_bugs"].get("repos"))
+        if mapping("product_bugs.sim_repos", cfg["product_bugs"].get("sim_repos")):
+            strings("product_bugs.sim_repos", cfg["product_bugs"]["sim_repos"])
+    if mapping("ci_main", cfg.get("ci_main")):
+        repos("ci_main", list(cfg["ci_main"]))
+        strings("ci_main", cfg["ci_main"])
+    if mapping("gate_rerun", cfg.get("gate_rerun")):
+        repos("gate_rerun.repos", cfg["gate_rerun"].get("repos"))
+    pb = cfg.get("pr_budget")
+    if pb is not None and not (isinstance(pb, int) and not isinstance(pb, bool)) and not (
+            isinstance(pb, dict) and all(isinstance(n, int) and not isinstance(n, bool) for n in pb.values())):
+        out.append("router.yaml: `pr_budget` is a number, or a mapping of role to number with `default`")
+    da = cfg.get("digest_answers")
+    if da and not (isinstance(da, dict) and isinstance(da.get("role"), str) and da["role"]):
+        out.append("router.yaml: digest_answers names the role its answers start: {role: <role>}")
+    dl = cfg.get("delivered")
+    if dl is not None and not isinstance(dl, bool) and not (
+            isinstance(dl, dict) and set(dl) <= {"backfill"} and isinstance(dl.get("backfill"), list) and len(dl["backfill"]) == 2
+            and all(re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(d)) for d in dl["backfill"])):
+        out.append("router.yaml: `delivered` is true, false or {backfill: [<YYYY-MM-DD from>, <YYYY-MM-DD until>]}")
+    for key in ("tool_request_label", "deployer_login", "clock_login"):
+        if cfg.get(key) is not None and not isinstance(cfg[key], str):
+            out.append(f"router.yaml: `{key}` is a string")
+    return out
+
+
 def config_problems(cfg: dict) -> list[str]:
     """What's wrong with router.yaml against the policy repo, each as one line; a pass routes nothing while any is
-    listed (these were test_router.py's checks on the policy repo's own files)."""
-    out = []
-    known = {"product_bugs", "tool_requests", "tool_request_label", "reviews", "delivered", "resume", "pr_budget", "digest_answers",
-             "override", "deployer_login", "clock_login", "gate_rerun", "run_failed", "ci_main"}
-    out += [f"router.yaml: unknown key `{k}`" for k in sorted(set(cfg) - known)]
-    out += [f"router.yaml: `{k}` has no value (leave the key out to turn its rule off)" for k in sorted(set(cfg) & known) if cfg[k] is None]
-    lists = {"tool_requests": cfg.get("tool_requests"), "reviews": cfg.get("reviews"), "run_failed": cfg.get("run_failed"),
-             "product_bugs.repos": product_bugs(cfg).get("repos"), "gate_rerun.repos": (cfg.get("gate_rerun") or {}).get("repos")}
-    out += [f"router.yaml: `{k}` is a list of repositories" for k, v in lists.items() if v is not None and not isinstance(v, list)]
-    out += [f"router.yaml: `{k}` is a mapping" for k in ("ci_main", "gate_rerun", "pr_budget") if cfg.get(k) is not None and not isinstance(cfg[k], (dict, int) if k == "pr_budget" else dict)]
-    if out:
-        return out  # the shape is wrong: the checks below would read it wrong
-    if "product_bugs" in cfg and not isinstance(cfg["product_bugs"], dict):
-        out.append("router.yaml: product_bugs is {repos: [...], sim_repos: {<sim repo>: <product label>}}, not a list")
+    listed (these were test_router.py's checks on the policy repo's own files). The policy checks read the config's
+    lists, so they run once its shape is sound."""
+    out = [f"router.yaml: unknown key `{k}`" for k in sorted(set(cfg) - KNOWN_KEYS)]
+    shape = shape_problems(cfg)
+    if shape:
+        return out + shape
     probed = config_repos(cfg)
-    out += [f"router.yaml: {r} is not a repository of {ORG}" for r in probed
-            if not (REPO_RE.fullmatch(str(r)) and str(r).split("/", 1)[0].lower() == ORG.lower())]
     for f in sorted(ROLES.glob("*/role.yaml")):
         writes = set(((yaml.safe_load(f.read_text()) or {}).get("writes") or {}).get("repos") or [])
         missing = sorted(writes - set(probed))
         if missing:
             out.append(f"{f.relative_to(TOP)}: {', '.join(missing)} is in no router.yaml list, so it is never probed and a missing install there ends the pass")
-    da = cfg.get("digest_answers")
-    if da and not (isinstance(da, dict) and da.get("role")):
-        out.append("router.yaml: digest_answers names the role its answers start: {role: <role>}")
     gr = (cfg.get("gate_rerun") or {}).get("repos") or []
     if gr:
         router = role_file(ROUTER_ROLE)
