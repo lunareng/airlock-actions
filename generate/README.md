@@ -8,7 +8,7 @@ mode after changing `config.yaml`, `repos/` or `roles/`, and commits what it wri
 | --- | --- | --- |
 | `.github/workflows/role-<role>.yml` | each agent role with a `run` | The role's triggers (`workflow_dispatch` with `signal` and `clock`) and a call to this repository's `.github/workflows/role.yml`, pinned to `airlock_actions.ref`. No `schedule:` trigger: the clock is the only timer. |
 | `generated/codeowners/<repo>.CODEOWNERS` | `repos/<repo>.yaml` | Commit as that repository's `.github/CODEOWNERS`. An L1/L2 default owns everything; an L1/L2 path stricter than the default gets its own line; `/AUTONOMY.yaml` is always owned. |
-| `generated/branch-protection/<repo>.json` | `repos/<repo>.yaml`, `config.yaml` | The body for `PUT /repos/<org>/<repo>/branches/main/protection`. |
+| `generated/branch-protection/<repo>.json` | `repos/<repo>.yaml`, `config.yaml` | The body for `PUT /repos/<org>/<repo>/branches/main/protection` ([adopt](../adopt/README.md)'s `protect` sends it). |
 | `generated/roles/<role>/github-app.json` | `roles/<role>/role.yaml` | The permissions of a role's own GitHub App, from its `writes`; only for a role not on Airlock (`identity.key_store` other than `airlock`). Roles sharing a `github_login` share one App. |
 | `generated/schedules.json` | every agent role's `run.schedule`, and `config.yaml` `clock` | What a clock dispatches, and when (UTC cron), each with `clock: "true"`. |
 
