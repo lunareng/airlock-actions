@@ -48,6 +48,8 @@ def gh(path: str, until=None, **params):
             out = subprocess.run(["gh", "api", f"{path}?{q}"], capture_output=True, text=True)
             if out.returncode == 0:
                 break
+            if re.search(r"HTTP (400|401|404|410|422)\b", out.stderr):
+                break  # an answer, not a hiccup: asking again would get the same one
             if attempt < 2:
                 time.sleep(2 * (attempt + 1))
         else:
@@ -101,14 +103,19 @@ def merged_prs(repo: str, since: datetime) -> list:
     return _merged[repo]
 
 
-def mentions(text: str, repo: str, number: int) -> bool:
-    """Whether a PR's text names issue `number` of `repo` (owner/name): `#N`, `name#N`, `owner/name#N`, or the issue's
-    URL. Another owner's `other/name#N`, or another repository's `web#N`, is not it."""
+def mentions(text: str, repo: str, number: int, bare: bool = True) -> bool:
+    """Whether a PR's text names issue `number` of `repo` (owner/name): `name#N`, `owner/name#N`, the issue's URL, and
+    `#N` when `bare` (the PR is in `repo` itself, where `#N` means its issue). Another owner's `other/name#N`, or
+    another repository's `web#N`, is not it."""
     owner, short = (re.escape(p) for p in repo.split("/"))
     return bool(re.search(
         rf"(?<![\w/.-])(?:{owner}/)?{short}#{number}\b"
-        rf"|(?<![\w/#]){'#'}{number}\b"
-        rf"|github\.com/{owner}/{short}/issues/{number}\b", text or "", re.I))
+        + (rf"|(?<![\w/#]){'#'}{number}\b" if bare else "")
+        + rf"|github\.com/{owner}/{short}/issues/{number}\b", text or "", re.I))
+
+
+def in_repo(item: dict, repo: str) -> bool:
+    return (item.get("repository_url") or "").lower().endswith(f"/repos/{repo.lower()}")
 
 
 def merged_pr_for(repo: str, number: int, after: datetime, before: datetime, since: datetime) -> bool:
@@ -124,7 +131,10 @@ def merged_pr_for(repo: str, number: int, after: datetime, before: datetime, sin
         res = gh("search/issues", q=q, per_page=5)
     except Unmeasured:
         return False  # not converted: a search the token can't make never makes a pick look done
-    return any(mentions((it.get("title") or "") + "\n" + (it.get("body") or ""), repo, number) for it in res.get("items", []))
+    # merged: is by day, so each result's own closed_at (a merged PR closed when it merged) must be inside the window.
+    return any(it.get("closed_at") and after <= ts(it["closed_at"]) <= before
+               and mentions((it.get("title") or "") + "\n" + (it.get("body") or ""), repo, number, bare=in_repo(it, repo))
+               for it in res.get("items", []))
 
 
 def has_signal(body: str) -> bool:

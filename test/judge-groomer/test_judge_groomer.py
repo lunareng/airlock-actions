@@ -141,8 +141,22 @@ def main() -> int:
 
     def broken(rules):
         rules.remove(rule(rules, "repos/acme/web/pulls", state="closed"))
-    rc, rep, _ = judge(answers=edit(broken))
-    checks["a GitHub read that keeps failing is unmeasured, exit 2, never a pass"] = rc == 2 and rep.get("pass") is False and "acme/web/pulls" in rep.get("unmeasured", "")
+    rc, rep, calls = judge(answers=edit(broken))
+    checks["a GitHub read that fails is unmeasured, exit 2, never a pass"] = rc == 2 and rep.get("pass") is False and "acme/web/pulls" in rep.get("unmeasured", "")
+    checks["a 404 is an answer, asked once, not retried"] = sum(c[1].startswith("repos/acme/web/pulls?") for c in calls) == 1
+
+    def search_item(**change):
+        def fn(rules):
+            next(r for r in rules if r.get("q_contains"))["answer"]["items"][0].update(change)
+        return fn
+    _, rep, _ = judge(answers=edit(search_item(body="Fixes the api #13 timeout")))
+    checks["a bare #N in another repository's PR is that repository's issue: no conversion"] = {d["issue"]: d for d in rep["details"]}["acme/api#13"]["merged_pr"] is False
+    _, rep, _ = judge(answers=edit(search_item(body="Fixes #13 (api#13)", repository_url="https://api.github.com/repos/acme/api")))
+    checks["a search result in the issue's own repository may say #N"] = {d["issue"]: d for d in rep["details"]}["acme/api#13"]["merged_pr"] is True
+    _, rep, _ = judge(answers=edit(search_item(closed_at="2026-10-12T08:00:00Z")))
+    checks["a search result merged earlier on the day of the pick, before it, doesn't convert it"] = {d["issue"]: d for d in rep["details"]}["acme/api#13"]["merged_pr"] is False
+    _, rep, _ = judge(answers=edit(search_item(closed_at=None)))
+    checks["a search result with no closed_at doesn't convert"] = {d["issue"]: d for d in rep["details"]}["acme/api#13"]["merged_pr"] is False
 
     def not_json(rules):
         rule(rules, "repos/acme/web/pulls", state="closed")["raw"] = "<html>a proxy's error page</html>"
@@ -184,7 +198,8 @@ def main() -> int:
             and not j.mentions("web#12", "acme/api", 12) and not j.mentions("acme/web#12", "acme/api", 12)
             and not j.mentions("my-api#12", "acme/api", 12) and not j.mentions("#123", "acme/api", 12)
             and not j.mentions("https://github.com/other/api/issues/12", "acme/api", 12)
-            and not j.mentions("https://github.com/acme/api/issues/123", "acme/api", 12),
+            and not j.mentions("https://github.com/acme/api/issues/123", "acme/api", 12)
+            and not j.mentions("Closes #12", "acme/api", 12, bare=False) and j.mentions("Closes acme/api#12", "acme/api", 12, bare=False),
         "has_signal: a link, an issue reference or #N under ## Signal": j.has_signal("## Signal\nhttps://x.example/1\n")
             and j.has_signal("## Signal\nacme/api#3\n") and j.has_signal("## Signal\n#3\n## Done means\nx")
             and not j.has_signal("## Signal\nsomeone said so\n## Done means\nhttps://x.example/1") and not j.has_signal("no section #3"),

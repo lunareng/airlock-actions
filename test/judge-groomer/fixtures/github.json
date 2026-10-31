@@ -32,7 +32,7 @@
       {"number": 43, "title": "Mentions another repo's issue", "body": "See other/api#13 and acme/web#13", "merged_at": "2026-10-14T09:00:00Z", "updated_at": "2026-10-14T09:00:00Z"}
     ]},
     {"path": "search/issues", "q_contains": ["user:acme ", "\"api#13\""], "answer": {"items": [
-      {"number": 9, "title": "Search index", "body": "Part of acme/api#13"}
+      {"number": 9, "title": "Search index", "body": "Part of acme/api#13", "repository_url": "https://api.github.com/repos/acme/web", "closed_at": "2026-10-14T09:00:00Z"}
     ]}},
     {"path": "search/issues", "answer": {"items": []}},
     {"path": "repos/acme/api/issues", "params": {"state": "open"}, "answer": [
