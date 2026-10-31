@@ -5,6 +5,7 @@ generator writes, committed as a tenant would). Run: python3 test/generate/test_
 With REPRODUCE=<a policy checkout> and REPRODUCE_REPO=<owner/name> set, it also runs --check against that checkout:
 the byte-for-byte proof that this generator reproduces a policy repo's committed files. Nothing here names one."""
 import json
+import traceback
 import os
 import shutil
 import subprocess
@@ -41,7 +42,8 @@ def case(name: str):
             print(f"ok  {name}")
         except AssertionError as e:
             failures += 1
-            print(f"FAIL {name}: {e}")
+            line = traceback.extract_tb(e.__traceback__)[-1].lineno
+            print(f"FAIL {name} (line {line}): {e}")
         return fn
     return wrap
 
@@ -57,7 +59,7 @@ def set_config(d: Path, edit) -> None:
 @case("the committed fixture is exactly what the policy produces (check passes, write changes nothing)")
 def _():
     r = gen(FIXTURE, "--check")
-    assert r.returncode == 0 and "OK: 0 stale file(s) of 16" in r.stdout, r.stdout + r.stderr
+    assert r.returncode == 0 and "OK: 0 stale file(s) of 18" in r.stdout, r.stdout + r.stderr
     d = copy()
     before = {p.relative_to(d): p.read_bytes() for p in d.rglob("*") if p.is_file()}
     r = gen(d, "--write")
