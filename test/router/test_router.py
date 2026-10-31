@@ -643,3 +643,14 @@ assert '[ -z "$GH_TOKEN" ]' in _route, "no token, no pass"
 assert _action["inputs"]["dry-run"]["default"] == "true", "a caller that forgets the input writes nothing"
 assert _action["inputs"]["token"]["required"] is True
 print("OK: the action")
+
+
+# The override rule asks only where the router's role writes; the rest it names once, so a repo it can't write to never
+# fails the pass with a 403 (lunareng/autonomy's live pass, 2026-10-31).
+from router import override_repos  # noqa: E402
+_watched, _unreachable = override_repos()
+assert "acme/api" in _watched and "acme/web" in _watched, _watched
+assert _unreachable == ["acme/marketing", "acme/mobile", "acme/studio"], _unreachable
+assert not (_watched & set(_unreachable)) and "acme/policy" not in _watched and "acme/legacy" not in _watched
+print("OK: override asks only where the router writes")
+
