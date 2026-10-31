@@ -1,0 +1,24 @@
+# The autonomy gate: lunareng/airlock-actions/gate scores each PR's level from its paths, this repository's
+# AUTONOMY.yaml and its file in the policy repo, labels it, and fails an agent's L1/L2 PR until the human owner
+# approves its current commit. It reads the policy through Airlock, so this file must be
+# .github/workflows/autonomy-gate.yml and its job must be named autonomy-gate.
+name: autonomy gate
+on:
+  pull_request: # edited and auto_merge_*: an L1 PR's Proof owed and auto-merge are part of its verdict
+    types: [opened, synchronize, reopened, edited, auto_merge_enabled, auto_merge_disabled]
+  pull_request_review: # the owner's approval on an agent's L1/L2 PR passes the gate
+    types: [submitted, dismissed]
+permissions:
+  contents: read
+  pull-requests: write
+  id-token: write # the OIDC token Airlock reads the policy for
+  actions: write   # a review re-runs the push-time gate job, so the PR keeps one autonomy-gate row
+jobs:
+  gate:
+    name: autonomy-gate
+    runs-on: <airlock:runner><airlock:runner_note>
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - uses: lunareng/airlock-actions/gate@<airlock:ref><airlock:ref_note>

@@ -1,0 +1,39 @@
+# Claude reviews every pull request against the autonomy charter: lunareng/airlock-actions' review actions, run as
+# the steps of this repo's own jobs, so the checks are named claude-review (required on main; the verdict binds
+# agents' PRs, <airlock:agent_logins>, and anyone else's gets it as a warning) and claude-security-review (advisory).
+name: claude review
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  pull_request_review: # a person's approval re-runs only the verdict step (an agent's workflow PR waits for one)
+    types: [submitted, dismissed]
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  id-token: write
+# Each event kind cancels only its own kind; a new push still cancels the review of the head it replaces.
+concurrency:
+  group: claude-review-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+jobs:
+  review:
+    name: claude-review
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: <airlock:runner><airlock:runner_note>
+    timeout-minutes: 20
+    steps:
+      - uses: lunareng/airlock-actions/review@<airlock:ref><airlock:ref_note>
+        with:
+          claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          agent-logins: "<airlock:agent_logins>"
+          human-owner: <airlock:human_owner_name>
+  security:
+    name: claude-security-review
+    if: ${{ github.event_name == 'pull_request' && !github.event.pull_request.draft }}
+    runs-on: <airlock:runner>
+    timeout-minutes: 20
+    steps:
+      - uses: lunareng/airlock-actions/review/security@<airlock:ref><airlock:ref_note>
+        with:
+          claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}

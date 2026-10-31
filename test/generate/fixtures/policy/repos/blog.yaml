@@ -1,0 +1,8 @@
+schema: 1
+repo: acme/blog
+owner_role: builder
+default: L3
+paths:
+  - glob: "drafts/publish/**"
+    level: L2
+    why: Publishing sends to subscribers.
