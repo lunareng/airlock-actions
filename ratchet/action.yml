@@ -1,0 +1,78 @@
+name: airlock ratchet
+description: >
+  Levels earned and lost by evidence, across every repository in your policy repo's repos/. A repository below L4
+  with enough clean weeks (no catch) gets one proposal issue in the policy repo, never a promotion. An incident in the
+  last 7 days lowers its level one step by tightening PRs (its repos/ file here and its own AUTONOMY.yaml), which
+  merge on green. An L4 repository or role whose judge has stopped running gets a catch issue, and after
+  judge_demote_days the same tightening PR. Run it in a checkout of the policy repo with its full history
+  (fetch-depth 0; the clocks start when each file landed), on the token Airlock mints for the ratchet role. Its
+  settings are config.yaml's ratchet and catch_logs keys (ratchet/README.md).
+inputs:
+  token:
+    description: the GitHub token the ratchet reads and writes with (the Airlock action's token output)
+    required: true
+  dry-run:
+    description: '"false" opens the proposals, catches and PRs; anything else prints the decisions and writes nothing'
+    default: "true"
+  role:
+    description: the role this run is, for its demotion branches (agent/<role>/demote-...)
+    default: ratchet
+  weeks:
+    description: clean weeks a promotion proposal needs; empty is config.yaml ratchet.weeks (4)
+    default: ""
+  policy-dir:
+    description: the policy repo's checkout, with its full history
+    default: ${{ github.workspace }}
+outputs:
+  report:
+    description: the path of the run's decisions as JSON (repos, judges, proposed, demoted, judge_catches)
+    value: ${{ steps.ratchet.outputs.report }}
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      with:
+        python-version: "3.12"
+    - shell: bash
+      run: |
+        pip install --quiet pyyaml==6.0.3
+        # The ratchet runs python -I, which never reads the user site pip falls back to when site-packages isn't writable.
+        python -I -c 'import yaml' || { echo "::error title=airlock ratchet::pyyaml isn't importable by an isolated Python"; exit 1; }
+    - name: gh (when the runner image ships none; pinned checksum)
+      shell: bash
+      env:
+        GH_VERSION: "2.101.0"
+        GH_SHA256: "9bca2d1c16825f109907a23307628a2f0698fbf99662b73a5cf0b020293072b8"
+      run: |
+        set -euo pipefail
+        command -v gh >/dev/null && exit 0
+        dir="$RUNNER_TEMP/gh-${GH_VERSION}"; mkdir -p "$dir"
+        curl -sSfL -o "$dir/gh.tar.gz" "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz"
+        echo "${GH_SHA256}  $dir/gh.tar.gz" | sha256sum -c -
+        tar xzf "$dir/gh.tar.gz" -C "$dir" --strip-components=2 "gh_${GH_VERSION}_linux_amd64/bin/gh"
+        echo "$dir" >> "$GITHUB_PATH"
+    - id: ratchet
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        DRY_RUN: ${{ inputs.dry-run }}
+        ROLE: ${{ inputs.role }}
+        WEEKS: ${{ inputs.weeks }}
+        POLICY_DIR: ${{ inputs.policy-dir }}
+        OWNER: ${{ github.repository_owner }}
+        POLICY_REPO: ${{ github.repository }}
+        HERE: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        # No token, no ratchet: fail closed rather than read or write on the job's own token.
+        [ -n "$GH_TOKEN" ] || { echo "::error title=airlock ratchet::no token; the ratchet stops here"; exit 1; }
+        # A shallow checkout would start every clock at its one commit: fail closed rather than miscount.
+        if [ "$(git -C "$POLICY_DIR" rev-parse --is-shallow-repository)" != "false" ]; then
+          echo "::error title=airlock ratchet::the policy repo's checkout is shallow; check it out with fetch-depth: 0"; exit 1
+        fi
+        args=(--policy-dir "$POLICY_DIR" --owner "$OWNER" --policy-repo "$POLICY_REPO" --role "$ROLE")
+        [ "$DRY_RUN" = "false" ] || args+=(--dry-run)
+        [ -z "$WEEKS" ] || args+=(--weeks "$WEEKS")
+        python -I "$HERE/ratchet.py" "${args[@]}" | tee "$RUNNER_TEMP/ratchet.json"
+        echo "report=$RUNNER_TEMP/ratchet.json" >> "$GITHUB_OUTPUT"
+        { echo "## Ratchet$([ "$DRY_RUN" = "false" ] || echo ' (dry run)')"; echo; echo '```json'; cat "$RUNNER_TEMP/ratchet.json"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"

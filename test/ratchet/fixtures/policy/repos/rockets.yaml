@@ -1,0 +1,10 @@
+schema: 1
+repo: acme/rockets
+# The launch code.
+default: L4
+actions:
+  send: L2
+goals: GOALS.md
+judge:
+  metric: launches_green
+  check: {repo: acme/rockets, workflow: ci.yml, branch: main, max_age_days: 7}
