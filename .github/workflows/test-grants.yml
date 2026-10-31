@@ -1,0 +1,23 @@
+# grants/sync's tests: the bodies, the App JWT (verified with the key made for the test), the session, a refused PUT,
+# changed-role selection and refusals, against a stand-in server on 127.0.0.1 and the invented acme tenant. No network.
+name: test grants
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: test-grants-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  grants:
+    runs-on: ubuntu-latest # a public repository: GitHub-hosted runners, free, and the self-hosted pools take no public repositories
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - run: pip install --quiet pyyaml==6.0.3
+      - run: python -I test/grants/test_sync.py
