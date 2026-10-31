@@ -28,6 +28,8 @@ class World:
         self.airlock = (200, {"token": TOKEN, "repository": "acme/policy", "expiresAt": "x"})
         self.files = {"config.yaml": CONFIG, "repos/api.yaml": POLICY, **ROLES}
         self.calls = []
+        self.missing_first = 0  # answer 404 for config.yaml this many times first
+        self.fail_first = 0     # answer 502 to /v1/read this many times first
 
 
 def serve(world: World):
@@ -54,11 +56,17 @@ def serve(world: World):
             prefix = "/repos/acme/policy/contents/"
             if self.path.startswith(prefix):
                 p = self.path[len(prefix):]
+                if p == "config.yaml" and world.missing_first:
+                    world.missing_first -= 1
+                    return self.answer(404, {"message": "Not Found"})
                 return self.answer(200, world.files[p], raw=True) if p in world.files else self.answer(404, {"message": "Not Found"})
             self.answer(404, {"message": "Not Found"})
 
         def do_POST(self):
             world.calls.append(("POST", self.path, self.headers.get("Authorization")))
+            if world.fail_first:
+                world.fail_first -= 1
+                return self.answer(502, {"message": "Bad Gateway"})
             code, body = world.airlock
             self.answer(code, body)
 
@@ -130,5 +138,20 @@ print("ok  a policy repo without an owner fails the gate, and the read is still 
 r, cfg, policy = run(World(), repo_name="../etc")
 assert r.returncode == 1 and cfg is None
 print("ok  a repository name that isn't a file name reads nothing")
+
+w = World()
+w.missing_first = 1
+w.fail_first = 1
+r, cfg, policy = run(w)
+assert r.returncode == 0 and cfg and policy == POLICY, r.stdout + r.stderr
+assert sum(1 for c in w.calls if c[0] == "POST") == 2, "a 502 from Airlock is retried once"
+assert sum(1 for c in w.calls if c[1].endswith("/contents/config.yaml")) == 2, "a 404 for config.yaml is retried once"
+print("ok  a 502 from Airlock, or a 404 for config.yaml from a fresh token, is retried before the gate fails closed")
+
+w = World()
+w.files["config.yaml"] = "agent_markers: {}\n"
+w.missing_first = 0
+r, cfg, policy = run(w)
+assert r.returncode == 1 and "no config.yaml naming a human_owner" in r.stdout, "a config.yaml without an owner still fails, at once"
 
 print("OK: 0 failing case(s)")

@@ -24,6 +24,7 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -42,14 +43,25 @@ class Stop(Exception):
     """A reason the gate can't read the policy, said once as the job's error."""
 
 
+# A 5xx or no answer is retried, after 2 and then 4 seconds: one blip at GitHub or Airlock shouldn't fail a PR.
+# Anything else, a 4xx included, is the answer.
+TRIES, BACKOFF = 3, float(os.environ.get("AIRLOCK_GATE_BACKOFF", "2"))
+
+
 def _call(req: urllib.request.Request, what: str) -> bytes:
-    try:
-        with urllib.request.urlopen(req, timeout=20) as r:
-            return r.read()
-    except urllib.error.HTTPError as e:
-        raise _refusal(e.code, e.read(), what) from None
-    except (urllib.error.URLError, TimeoutError) as e:
-        raise Stop(f"{what}: unreachable ({type(e).__name__})") from None
+    for attempt in range(TRIES):
+        last = attempt == TRIES - 1
+        try:
+            with urllib.request.urlopen(req, timeout=20) as r:
+                return r.read()
+        except urllib.error.HTTPError as e:
+            if e.code < 500 or last:
+                raise _refusal(e.code, e.read(), what) from None
+        except (urllib.error.URLError, TimeoutError) as e:
+            if last:
+                raise Stop(f"{what}: unreachable ({type(e).__name__})") from None
+        time.sleep(BACKOFF * 2 ** attempt)
+    raise AssertionError("unreachable")
 
 
 def _refusal(code: int, body: bytes, what: str) -> Stop:
@@ -123,7 +135,15 @@ def gate_config(config: dict, roles: list[dict]) -> dict:
 
 
 def read_policy(token: str, repo: str, name: str) -> tuple[dict, list[dict], str | None]:
-    config = yaml.safe_load(maybe_file(token, repo, "config.yaml") or "") or {}
+    # A freshly minted token has been seen to get a 404 for a file that exists (lunareng/lunareng.com#41's gate, the
+    # same commit green two minutes later). config.yaml is never absent from a policy repo, so a 404 for it is retried.
+    text = None
+    for attempt in range(TRIES):
+        text = maybe_file(token, repo, "config.yaml")
+        if text is not None or attempt == TRIES - 1:
+            break
+        time.sleep(BACKOFF * 2 ** attempt)
+    config = yaml.safe_load(text or "") or {}
     if not isinstance(config, dict) or not config.get("human_owner"):
         raise Stop(f"{repo} has no config.yaml naming a human_owner")
     default = github(token, f"repos/{repo}")["default_branch"]
