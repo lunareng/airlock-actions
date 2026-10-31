@@ -8,7 +8,7 @@ mode after changing `config.yaml`, `repos/` or `roles/`, and commits what it wri
 | --- | --- | --- |
 | `.github/workflows/role-<role>.yml` | each agent role with a `run` | The role's triggers (`workflow_dispatch` with `signal` and `clock`) and a call to this repository's `.github/workflows/role.yml`, pinned to `airlock_actions.ref`. No `schedule:` trigger: the clock is the only timer. |
 | `generated/codeowners/<repo>.CODEOWNERS` | `repos/<repo>.yaml` | Commit as that repository's `.github/CODEOWNERS`. An L1/L2 default owns everything; an L1/L2 path stricter than the default gets its own line; `/AUTONOMY.yaml` is always owned. |
-| `generated/branch-protection/<repo>.json` | `repos/<repo>.yaml`, `config.yaml` | The body for `PUT /repos/<org>/<repo>/branches/main/protection` (adopt's `protect` sends it). |
+| `generated/branch-protection/<repo>.json` | `repos/<repo>.yaml`, `config.yaml` | The body for `PUT /repos/<org>/<repo>/branches/main/protection`. |
 | `generated/roles/<role>/github-app.json` | `roles/<role>/role.yaml` | The permissions of a role's own GitHub App, from its `writes`; only for a role not on Airlock (`identity.key_store` other than `airlock`). Roles sharing a `github_login` share one App. |
 | `generated/schedules.json` | every agent role's `run.schedule`, and `config.yaml` `clock` | What a clock dispatches, and when (UTC cron), each with `clock: "true"`. |
 
@@ -53,7 +53,7 @@ python3 path/to/airlock-actions/generate/generate.py --policy path/to/policy --w
 | `human_owner` | yes | | The CODEOWNERS owner of every L1/L2 path, e.g. `"@acme/owners"`. |
 | `required_checks.default`, `required_checks.<repo>` | yes | | Each repository's required status checks. |
 | `strict` | no | `[]` | Repositories whose checks must pass on the current base before merge. |
-| `owner_review` | no | `false` | Require the code owner's review on L1/L2 paths. Turn it on once every agent commits under its own login. |
+| `owner_review` | no | `false` (`true` or `false`, unquoted) | Require the code owner's review on L1/L2 paths. Turn it on once every agent commits under its own login. |
 | `clock` | no | `[]` | Timed workflows that aren't agent roles: `{workflow, cron, inputs}`. |
 | `airlock_actions.ref` | yes | | The commit SHA (40 hex) or `vX.Y.Z` release of lunareng/airlock-actions every generated caller pins. |
 | `airlock_actions.note` | no | | A one-line comment after the pin, e.g. what the commit is. |
@@ -65,7 +65,7 @@ python3 path/to/airlock-actions/generate/generate.py --policy path/to/policy --w
 | `generated.schedules` | no | `generated/schedules.json` | Where the schedules go. Keep it where your clock reads it. |
 | `generated.schedules_reader` | no | `the clock` | Who reads the schedules, named in the role workflows' and schedules' comments. |
 
-Every generated path must be inside the policy repo and outside `.github/`.
+Every generated path must be inside the policy repo and outside `.github/`. Every cron is five UTC fields of digits, `*`, `/`, `,` and `-`; a clock entry can't set the `clock` input, which is what holds a timed run to `AGENTS_ENABLED`; a hand-written `role-<role>.yml` for an agent role is an error, never overwritten.
 
 ```yaml
 # acme's config.yaml

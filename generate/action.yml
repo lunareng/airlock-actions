@@ -9,7 +9,7 @@ inputs:
     description: "check: fail if any generated file is stale; write: write them"
     default: check
   policy:
-    description: the policy repo checkout, relative to the workspace
+    description: the policy repo checkout, absolute or relative to the workspace
     default: "."
   repo:
     description: "the policy repo's full name, owner/name, for the files' provenance lines and schedules.json"
@@ -42,7 +42,8 @@ runs:
           *) echo "::error title=airlock generate::mode must be check or write, not '$MODE'"; exit 1 ;;
         esac
         set +e
-        python -I "$HERE/generate.py" --policy "$GITHUB_WORKSPACE/$POLICY" --repo "$REPO" "--$MODE" | tee "$RUNNER_TEMP/generate.out"
+        case "$POLICY" in /*) dir="$POLICY" ;; *) dir="$GITHUB_WORKSPACE/$POLICY" ;; esac
+        python -I "$HERE/generate.py" --policy "$dir" --repo "$REPO" "--$MODE" | tee "$RUNNER_TEMP/generate.out"
         status=${PIPESTATUS[0]}
         set -e
         echo "stale=$(grep -c 'is stale' "$RUNNER_TEMP/generate.out")" >> "$GITHUB_OUTPUT"
