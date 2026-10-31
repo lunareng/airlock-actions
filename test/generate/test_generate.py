@@ -211,6 +211,10 @@ def _():
         ("required_checks", lambda c: c.update(required_checks={"web": ["x"]})),
         ("clock", lambda c: c.update(clock=[{"workflow": "x.yml"}])),
         ("clock", lambda c: c["clock"][0]["inputs"].update(clock="false")),
+        ("clock", lambda c: c["clock"][0]["inputs"].update(CLOCK="false")),
+        ("clock", lambda c: c["clock"][0].update(cron="*/30 * * * *\n")),
+        ("clock", lambda c: c["clock"][0].update(workflow="role-router.yml\n")),
+        ("strict", lambda c: c.update(strict=["web\r"])),
         ("clock", lambda c: c["clock"][0].update(cron="every day")),
         ("strict", lambda c: c.update(strict="web")),
         ("required_checks.web", lambda c: c["required_checks"].update(web="build")),
@@ -243,6 +247,22 @@ def _():
     (d / "roles/triage/role.yaml").write_text((d / "roles/triage/role.yaml").read_text().replace('"15 9 * * 1-5"', '"15 9 * * 1-5\\"\\nevil: x"'))
     r = gen(d, "--check")
     assert r.returncode == 1 and "run.schedule: cron" in r.stdout, r.stdout
+    d = copy()
+    (d / "roles/triage/role.yaml").write_text((d / "roles/triage/role.yaml").read_text().replace('"15 9 * * 1-5"', '"15 9 * * 1-5\\n"'))
+    r = gen(d, "--check")
+    assert r.returncode == 1 and "run.schedule: cron" in r.stdout, ("a trailing newline too", r.stdout)
+    d = copy()
+    (d / "repos/api.yaml").write_text((d / "repos/api.yaml").read_text().replace('glob: "migrations/**"', 'glob: "* @attacker"'))
+    r = gen(d, "--check")
+    assert r.returncode == 1 and "no whitespace" in r.stdout, r.stdout
+    d = copy()
+    (d / "repos/api.yaml").write_text((d / "repos/api.yaml").read_text() + "  - just a string\n")
+    r = gen(d, "--check")
+    assert r.returncode == 1 and "paths: a list" in r.stdout, r.stdout
+    d = copy()
+    (d / ".github/workflows/role-other.yml").write_bytes(b"\xff\xfe not utf-8")
+    r = gen(d, "--check")
+    assert r.returncode == 1 and "::error title=airlock generate::" in r.stdout and "Traceback" not in r.stderr, (r.stdout, r.stderr)
     d = copy()
     (d / ".github/workflows/role-triage.yml").write_text("# Ours.\nname: triage\n")
     r = gen(d, "--write")
