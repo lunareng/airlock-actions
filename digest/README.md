@@ -10,14 +10,14 @@ Sections, each at most five lines, empty ones left out:
 | Shipped | Pull requests merged this week, with the `level:Lx` label the gate set, and `agent` or `human` by `agent_markers.branch_prefixes`. |
 | Waiting on you | Open, non-draft pull requests labelled `level:L1` or `level:L2`. |
 | Declined | Open issues labelled `declined` that changed this week. |
-| Health | Role runs this week in the policy repo (`role-*.yml`, workflow roles left out, cancelled and skipped runs not counted), open `ci-failure` issues, and the repositories the token could not read. |
+| Health | Role runs this week in the policy repo (`role-*.yml` runs started by `workflow_dispatch`, workflow roles left out, cancelled and skipped runs not counted), open `ci-failure` issues, and the repositories the token could not read. |
 | Catches | Lines dated this week in each `catch_logs` file that name its marker. |
 | Delivered? | Open issues the router labelled `delivered?`. |
 | Overrides | Pull requests merged over a FAIL `claude-review` verdict since last week's Monday, with the reason the router asked for, or "no reason given" after 7 days. |
 
 ## Use it
 
-> Not in a release yet: `v1` doesn't carry `digest/`. Until a release does, pin `uses:` to the commit on `main` that added it.
+> Not in a release yet: `v1` doesn't carry `digest/`, so the example pins `digest/` to a commit on `main` (`<sha>`) until a release does.
 
 In your policy repo, `.github/workflows/role-digest.yml`, with a `roles/digest/role.yaml` whose `writes` are `repos: [<your org>/<policy repo>]` and `issues: [create, edit_body]`:
 
@@ -48,7 +48,7 @@ jobs:
         run: |
           echo "::error::Airlock handed digest no token; the run stops here"
           exit 1
-      - uses: lunareng/airlock-actions/digest@v1
+      - uses: lunareng/airlock-actions/digest@<sha> # a commit on main, until a release carries digest/
         with:
           token: ${{ steps.airlock.outputs.token }}
           dry-run: ${{ inputs.dry_run }}
@@ -59,14 +59,14 @@ jobs:
 | `token` | Yes | | The token it reads and writes with: the Airlock action's `token` output. |
 | `dry-run` | No | `true` | `false` writes the issue. Anything else prints the digest to the job summary and writes nothing. |
 | `week-of` | No | this week | A date (`YYYY-MM-DD`) in the week to digest. |
-| `repos` | No | every `repos/*.yaml` | `owner/name` repositories, comma-separated, in place of the policy repo's list. |
+| `repos` | No | every `repos/*.yaml` | `owner/name` repositories in your organization, comma-separated, in place of the policy repo's list. |
 | `policy-dir` | No | the workspace | The policy repo's checkout. |
 
 | Output | What it is |
 | --- | --- |
 | `url` | The digest issue's URL. Empty on a dry run. |
 
-The organization is the workflow's own (`github.repository_owner`) and the issue goes in the workflow's repository (`github.repository`), so the action can't be pointed at anyone else's. It stops, writing nothing, when the token is empty, the checkout has no `config.yaml` and `repos/`, or its settings below are malformed.
+The organization is the workflow's own (`github.repository_owner`) and the issue goes in the workflow's repository (`github.repository`), and every repository it reads (`repos`, `catch_logs`) must be in that organization. It stops, writing nothing, when the token is empty, the checkout has no `config.yaml` and `repos/`, a key it reads is malformed, a repository named is outside the organization, or the lookup of the week's open digest issue fails (rather than open a second one).
 
 ## Settings
 
