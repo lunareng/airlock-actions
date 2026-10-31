@@ -1,0 +1,8 @@
+schema: 1
+role: clerk
+level: L3
+identity:
+  github_login: "acme-clerk[bot]"
+  key_store: airlock
+writes:
+  repos: [acme/policy]

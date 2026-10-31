@@ -1,0 +1,4 @@
+schema: 1
+repo: acme/station
+owner_role: station-engineer
+default: L3

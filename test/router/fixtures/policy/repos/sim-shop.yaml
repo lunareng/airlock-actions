@@ -1,0 +1,4 @@
+schema: 1
+repo: acme/sim-shop
+owner_role: sim-engineer   # the engineer, not sim-triage
+default: L3

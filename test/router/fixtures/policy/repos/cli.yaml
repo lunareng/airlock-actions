@@ -1,0 +1,4 @@
+schema: 1
+repo: acme/cli
+owner_role: cli-engineer
+default: L3

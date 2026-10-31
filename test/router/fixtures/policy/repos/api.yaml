@@ -1,0 +1,4 @@
+schema: 1
+repo: acme/api
+owner_role: api-engineer
+default: L3

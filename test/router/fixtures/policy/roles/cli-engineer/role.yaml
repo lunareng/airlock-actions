@@ -1,0 +1,7 @@
+schema: 1
+role: cli-engineer
+level: L3
+identity:
+  github_login: "acme-cli-engineer[bot]"
+writes:
+  repos: [acme/cli]

@@ -1,0 +1,4 @@
+schema: 1
+repo: acme/service
+owner_role: policy-engineer
+default: L1

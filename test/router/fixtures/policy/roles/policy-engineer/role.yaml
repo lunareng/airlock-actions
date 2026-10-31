@@ -1,0 +1,8 @@
+schema: 1
+role: policy-engineer
+level: L3
+identity:
+  github_login: "acme-policy-engineer[bot]"
+  key_store: airlock
+writes:
+  repos: [acme/policy, acme/service]

@@ -1,0 +1,4 @@
+schema: 1
+repo: acme/k8s
+owner_role: ops-engineer
+default: L2
