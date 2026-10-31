@@ -1,0 +1,10 @@
+# An invented tenant's policy repo (acme/policy) for the ratchet's tests.
+human_owner: "@wile"
+catch_logs:
+  - {repo: acme/handbook, path: ops/LEARNINGS.md, marker: Wile}
+ratchet:
+  skip_repos: [archive]
+  weeks: 4
+  judge_demote_days: 14
+  owner_name: Wile
+  legacy_demote_prefixes: ["chore/policy-demote-"]
