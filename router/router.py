@@ -122,7 +122,6 @@ ROUTER_ROLE = "router"                                             # the role wh
 REPOS, ROLES, CONFIG = TOP / "repos", TOP / "roles", TOP / "config.yaml"
 ROOT_CONFIG = CONFIG
 FOOTER = ""
-ROUTER_LOGIN: str | None = None    # the router role's own App (its role.yaml identity.github_login), if it has one
 CLOCK_LOGIN: str | None = None     # router.yaml clock_login: the App whose dispatches are scheduled runs
 DEPLOYER_LOGIN: str | None = None  # router.yaml deployer_login: the deploy bot whose PRs the override rule skips
 REPO_RE = re.compile(r"[A-Za-z0-9-]+/[A-Za-z0-9._-]+")
@@ -131,7 +130,7 @@ REPO_RE = re.compile(r"[A-Za-z0-9-]+/[A-Za-z0-9._-]+")
 def configure(top: Path | str, policy_repo: str, role: str = "router", cfg: dict | None = None) -> None:
     """Point the router at one tenant: its policy checkout `top`, its policy repo `owner/name`, the router's role
     name, and router.yaml's logins. Fails closed on a policy repo that isn't owner/name."""
-    global TOP, POLICY_REPO, ORG, ROUTER_ROLE, REPOS, ROLES, CONFIG, ROOT_CONFIG, FOOTER, ROUTER_LOGIN, CLOCK_LOGIN, DEPLOYER_LOGIN
+    global TOP, POLICY_REPO, ORG, ROUTER_ROLE, REPOS, ROLES, CONFIG, ROOT_CONFIG, FOOTER, CLOCK_LOGIN, DEPLOYER_LOGIN
     if not REPO_RE.fullmatch(policy_repo or ""):
         raise SystemExit(f"the policy repo must be owner/name (GITHUB_REPOSITORY or --policy-repo), not {policy_repo!r}")
     cfg = cfg or {}
@@ -140,7 +139,6 @@ def configure(top: Path | str, policy_repo: str, role: str = "router", cfg: dict
     REPOS, ROLES, CONFIG = TOP / "repos", TOP / "roles", TOP / "config.yaml"
     ROOT_CONFIG = CONFIG
     FOOTER = f"\n\n_Routed by {POLICY_REPO} (lunareng/airlock-actions router)._"
-    ROUTER_LOGIN = (role_file(role).get("identity") or {}).get("github_login")
     CLOCK_LOGIN = cfg.get("clock_login") or None
     DEPLOYER_LOGIN = cfg.get("deployer_login") or None
     router_logins.cache_clear()
@@ -442,8 +440,8 @@ def product_bugs(cfg: dict) -> dict:
 
 def config_repos(cfg: dict) -> list[str]:
     """Every repo a rule reads issues or PRs in, from the config's own lists."""
-    repos = [*product_bugs(cfg).get("repos", []), *cfg.get("tool_requests", []), *cfg.get("reviews", []),
-             *(cfg.get("ci_main") or {}).keys(), *cfg.get("run_failed", []), *(cfg.get("gate_rerun") or {}).get("repos", [])]
+    repos = [*(product_bugs(cfg).get("repos") or []), *(cfg.get("tool_requests") or []), *(cfg.get("reviews") or []),
+             *(cfg.get("ci_main") or {}).keys(), *(cfg.get("run_failed") or []), *((cfg.get("gate_rerun") or {}).get("repos") or [])]
     return sorted(set(repos))
 
 
@@ -470,10 +468,18 @@ def config_problems(cfg: dict) -> list[str]:
     known = {"product_bugs", "tool_requests", "tool_request_label", "reviews", "delivered", "resume", "pr_budget", "digest_answers",
              "override", "deployer_login", "clock_login", "gate_rerun", "run_failed", "ci_main"}
     out += [f"router.yaml: unknown key `{k}`" for k in sorted(set(cfg) - known)]
+    out += [f"router.yaml: `{k}` has no value (leave the key out to turn its rule off)" for k in sorted(set(cfg) & known) if cfg[k] is None]
+    lists = {"tool_requests": cfg.get("tool_requests"), "reviews": cfg.get("reviews"), "run_failed": cfg.get("run_failed"),
+             "product_bugs.repos": product_bugs(cfg).get("repos"), "gate_rerun.repos": (cfg.get("gate_rerun") or {}).get("repos")}
+    out += [f"router.yaml: `{k}` is a list of repositories" for k, v in lists.items() if v is not None and not isinstance(v, list)]
+    out += [f"router.yaml: `{k}` is a mapping" for k in ("ci_main", "gate_rerun", "pr_budget") if cfg.get(k) is not None and not isinstance(cfg[k], (dict, int) if k == "pr_budget" else dict)]
+    if out:
+        return out  # the shape is wrong: the checks below would read it wrong
     if "product_bugs" in cfg and not isinstance(cfg["product_bugs"], dict):
         out.append("router.yaml: product_bugs is {repos: [...], sim_repos: {<sim repo>: <product label>}}, not a list")
     probed = config_repos(cfg)
-    out += [f"router.yaml: {r} is not a repository of {ORG}" for r in probed if not (REPO_RE.fullmatch(str(r)) and str(r).split("/", 1)[0] == ORG)]
+    out += [f"router.yaml: {r} is not a repository of {ORG}" for r in probed
+            if not (REPO_RE.fullmatch(str(r)) and str(r).split("/", 1)[0].lower() == ORG.lower())]
     for f in sorted(ROLES.glob("*/role.yaml")):
         writes = set(((yaml.safe_load(f.read_text()) or {}).get("writes") or {}).get("repos") or [])
         missing = sorted(writes - set(probed))
@@ -879,7 +885,7 @@ def main() -> int:
         raise SystemExit("the router's App can read none of its repos: check its token, not the config")
     if unreadable:
         print(f"::warning::the router's App can't read {', '.join(unreadable)}: install the router's App there. "
-              f"Skipped this pass; every other repo was routed.")
+              f"Skipped this pass; every other repo was routed.", file=sys.stderr)
         cfg = without_repos(cfg, skip)
         report["skipped"] = unreadable
     started: set[str] = set()  # roles started this pass, so the resume rule never starts one twice
@@ -890,7 +896,7 @@ def main() -> int:
             gh.write("POST", f"repos/{repo}/labels", {"name": name, "color": "ededed"})
 
     sims = dict(product_bugs(cfg).get("sim_repos") or {})
-    for repo in product_bugs(cfg).get("repos", []):
+    for repo in (product_bugs(cfg).get("repos") or []):
         ensure_labels(repo, {"routed", "type:bug", "severity:high", "severity:medium", *sims.values()})
         for issue in gh.get(f"repos/{repo}/issues", state="open", per_page=100):
             if "pull_request" in issue or "routed" in labels_of(issue):
@@ -904,7 +910,7 @@ def main() -> int:
                 report["latency_hours"].append(round((now - ts(issue["created_at"])).total_seconds() / 3600, 1))
 
     tool_label = cfg.get("tool_request_label") or None
-    for repo in cfg.get("tool_requests", []):
+    for repo in (cfg.get("tool_requests") or []):
         ensure_labels(repo, {"routed", "type:feature"} | ({tool_label} if tool_label else set()))
         for issue in gh.get(f"repos/{repo}/issues", state="open", labels="tool-request", per_page=100):
             if "pull_request" in issue or "routed" in labels_of(issue):
@@ -922,7 +928,7 @@ def main() -> int:
                     started.add(d["role"])
 
     logins = agent_logins()
-    for repo in cfg.get("reviews", []):
+    for repo in (cfg.get("reviews") or []):
         role = owner_role(repo)
         if not role:
             continue
@@ -953,7 +959,7 @@ def main() -> int:
             if r not in closed_by_repo:  # one page, newest updated first: never the whole history
                 closed_by_repo[r] = [{**p, "repo": r} for p in gh.get(f"repos/{r}/pulls", max_pages=1, state="closed", sort="updated", direction="desc", per_page=50)]
             return closed_by_repo[r]
-        for repo in cfg.get("tool_requests", []):
+        for repo in (cfg.get("tool_requests") or []):
             role = owner_role(repo)
             if not role or role in started:
                 continue
@@ -1030,11 +1036,11 @@ def main() -> int:
         backfill = cfg["delivered"].get("backfill") if isinstance(cfg["delivered"], dict) else None
         since = delivered_since(now, backfill).date().isoformat()
         pending: set[tuple[str, int]] = set()
-        for repo in cfg.get("tool_requests", []):
+        for repo in (cfg.get("tool_requests") or []):
             for pr in gh.get(f"repos/{repo}/pulls", state="open", per_page=100):
                 pending |= set(signal_refs(pr.get("body"), repo))
         requests: dict[tuple[str, int], dict] = {}
-        for repo in cfg.get("tool_requests", []):
+        for repo in (cfg.get("tool_requests") or []):
             found = gh.get("search/issues", q=f"repo:{repo}+is:pr+is:merged+merged:>={since}", per_page=100).get("items", [])
             for pr in found:
                 pr = {**pr, "merged_at": (pr.get("pull_request") or {}).get("merged_at") or pr.get("closed_at") or ""}
@@ -1046,7 +1052,7 @@ def main() -> int:
                         # not the end of the pass (every pass once failed on a "#606" meant for another repository).
                         requests[key] = gh.get_or_none(f"repos/{key[0]}/issues/{key[1]}")
                         if requests[key] is None:
-                            print(f"::warning::{repo}#{pr.get('number')}: its Signal links {key[0]}#{key[1]}, which doesn't exist; skipped")
+                            print(f"::warning::{repo}#{pr.get('number')}: its Signal links {key[0]}#{key[1]}, which doesn't exist; skipped", file=sys.stderr)
                     req = requests[key]
                     if req is None or req.get("state") != "open" or "tool-request" not in labels_of(req) or "pull_request" in req:
                         continue
@@ -1058,7 +1064,7 @@ def main() -> int:
                         ensure_labels(key[0], {plan["label"]})
                         gh.write("POST", f"repos/{key[0]}/issues/{key[1]}/labels", {"labels": [plan["label"]]})
                     report["routed"].append(f"{key[0]}#{key[1]} delivered ({'part' if kind == 'part' else 'flagged'}) by {repo}#{pr['number']}")
-    for repo in cfg.get("run_failed", []):
+    for repo in (cfg.get("run_failed") or []):
         workflows = gh.get(f"repos/{repo}/actions/workflows", per_page=100).get("workflows", [])
         roles = {Path(w["path"]).stem.removeprefix("role-"): w for w in workflows if re.fullmatch(r"\.github/workflows/role-[\w-]+\.ya?ml", w["path"])}
         open_issues = {i["title"]: i for i in gh.get(f"repos/{repo}/issues", state="open", labels="run-failure", per_page=100) if "pull_request" not in i}

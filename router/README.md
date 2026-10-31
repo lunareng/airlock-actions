@@ -52,7 +52,16 @@ jobs:
       - uses: lunareng/airlock-actions/router@<sha>
         with:
           token: ${{ steps.app.outputs.token }}
-          dry-run: ${{ inputs.dry_run }}
+          dry-run: ${{ inputs.dry_run }}   # the workflow declares it (below); empty fails the pass
+```
+
+The workflow declares the input, as a boolean that defaults to a dry run, so a run without it writes nothing:
+
+```yaml
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run: {type: boolean, default: true}
 ```
 
 | Input | Default | |
@@ -62,7 +71,7 @@ jobs:
 | `config` | `router.yaml` | The router's config, relative to the checkout. |
 | `role` | `router` | The router's role (`roles/<role>/role.yaml`): its `identity.github_login` counts as the router's own, beside `config.yaml` `airlock.app_login`. |
 
-Output `report`: the path of the pass's JSON report (`routed`, `dispatched`, `closed`, `routed_within_1h`, the
+Output `report`: the path of the pass's JSON report (warnings go to stderr, so it is always JSON) (`routed`, `dispatched`, `closed`, `routed_within_1h`, the
 router's judge number, and `writes`). The job summary shows it too. A refused gate re-run fails the pass after
 the report.
 

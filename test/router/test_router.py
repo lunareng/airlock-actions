@@ -246,9 +246,11 @@ print("ok  override")
 # resume: a request the role took and deferred for its PR budget starts it again once one of its PRs closes.
 # The replay is autonomy#130 on 2026-10-26: dispatched 15:31, deferred 15:34 (both slots held by #120 and #121),
 # the owner's comment 17:46, #121 and #120 closed 17:48 and 17:55. Nothing started the role until Wednesday.
-from router import DISPATCH_MARK, RESUME_MARK, ROUTER_LOGIN, GitHub, budget_for, is_roles_pr, last_start, resume_plan, role_logins, role_open_count, role_repos, waits_for_slot  # noqa: E402
+from router import DISPATCH_MARK, RESUME_MARK, GitHub, router_logins, budget_for, is_roles_pr, last_start, resume_plan, role_logins, role_open_count, role_repos, waits_for_slot  # noqa: E402
 
 ROLE, LOGIN = "policy-engineer", "acme-policy-engineer[bot]"
+ROUTER_LOGIN = "acme-router[bot]"  # the router role's own App: roles/router/role.yaml identity.github_login
+assert router_logins() == {ROUTER_LOGIN, "acme-airlock[bot]"}, router_logins()
 LOGINS = role_logins(ROLE)
 # On Airlock (autonomy#139, wave 2) the role writes as its own App until that App retires, and as the shared one.
 assert LOGINS == {LOGIN, "acme-airlock[bot]"}, LOGINS
@@ -509,6 +511,10 @@ assert any("other/api is not a repository of acme" in p for p in _p(reviews=[*RC
 assert any("not a list" in p for p in _p(product_bugs=["acme/api"])), "the old list shape of product_bugs"
 assert any("digest_answers names the role" in p for p in _p(digest_answers=True)), "digest_answers needs its role"
 assert any("unknown key `tool_request`" in p for p in _p(tool_request=["acme/api"])), "a typo is a problem, not a rule turned off"
+assert any("`tool_requests` has no value" in p for p in _p(tool_requests=None)), "a key with no value is a problem, not a TypeError"
+assert any("`reviews` is a list" in p for p in _p(reviews="acme/api")), "a string where a list goes"
+assert any("`ci_main` is a mapping" in p for p in _p(ci_main=["acme/api"]))
+assert not any("not a repository of" in p for p in _p(reviews=[*RCFG["reviews"], "ACME/api"])), "organization names are case-insensitive"
 import contextlib as _ctx, io as _io, os as _os, tempfile as _tmp  # noqa: E401,E402
 for _bad in ("", "acme", "acme/policy/x", "../x"):
     try:
