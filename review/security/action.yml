@@ -10,9 +10,10 @@ inputs:
 runs:
   using: composite
   steps:
-  - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+  - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
     with:
       fetch-depth: 0
+  # gh before the reviewer, which posts its result with gh (lunareng/autonomy#104).
   - name: gh (when the runner image ships none; pinned checksum)
     shell: bash
     env:
@@ -26,6 +27,7 @@ runs:
       echo "${GH_SHA256}  $dir/gh.tar.gz" | sha256sum -c -
       tar xzf "$dir/gh.tar.gz" -C "$dir" --strip-components=2 "gh_${GH_VERSION}_linux_amd64/bin/gh"
       echo "$dir" >> "$GITHUB_PATH"
+  # A person's Markdown-only PR has nothing to scan.
   - id: docs
     env:
       AUTHOR: ${{ github.event.pull_request.user.login }}
@@ -38,10 +40,11 @@ runs:
       fi
     shell: bash
   - if: steps.docs.outputs.only != 'true'
-    uses: anthropics/claude-code-action@aa8a7738e48bf30a40ee499ce818bef081c5ab5e
+    uses: anthropics/claude-code-action@aa8a7738e48bf30a40ee499ce818bef081c5ab5e # v1.0.257
     with:
       claude_code_oauth_token: ${{ inputs.claude-code-oauth-token }}
       allowed_bots: '*'
+      # With a prompt the action posts nothing itself: gh must be an allowed tool (lunar-starship#125).
       claude_args: |
         --model ${{ inputs.model }} --max-turns 40
         --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh api:*)"
