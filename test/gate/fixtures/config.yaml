@@ -1,0 +1,23 @@
+# An invented policy repo's config.yaml with a long list of floors: the list lunareng/autonomy, tenant zero, keeps in
+# its own config.yaml. The gate's cases score the policies here with it, so they answer as they did when this list was
+# the gate's for every tenant.
+human_owner: "@acme-lead"
+floors:
+  actions:
+    touch_ehi: L1
+    delete_data: L1
+    send: L2
+    spend: L2
+    change_policy: L2
+  paths:
+    secrets: L1
+    dns: L1
+    backup: L1
+    argocd: L1
+    ehi: L1
+    consent: L2
+    suppression: L2
+    payments: L2
+    publish: L2
+    email: L2
+    sms: L2

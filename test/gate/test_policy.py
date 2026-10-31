@@ -154,4 +154,18 @@ w.missing_first = 0
 r, cfg, policy = run(w)
 assert r.returncode == 1 and "no config.yaml naming a human_owner" in r.stdout, "a config.yaml without an owner still fails, at once"
 
+# The tenant's floors reach the gate as config.yaml writes them, and floors the gate can't read stop it here.
+w = World()
+w.files["config.yaml"] = CONFIG + "floors:\n  actions: {send: L2}\n  paths: {firmware: L1, ehi: L1}\n"
+r, cfg, policy = run(w)
+assert r.returncode == 0 and cfg["floors"] == {"actions": {"send": "L2"}, "paths": {"firmware": "L1", "ehi": "L1"}}, (r.stdout, cfg)
+assert list(cfg["floors"]["paths"]) == ["firmware", "ehi"], "in the tenant's order"
+w = World()
+w.files["config.yaml"] = CONFIG + "floors:\n  path: {firmware: L1}\n"
+r, cfg, policy = run(w)
+errors = [l for l in r.stdout.splitlines() if l.startswith("::error")]
+assert r.returncode == 1 and cfg is None and errors == ["::error title=autonomy gate::acme/policy's config.yaml: floors has path; it takes only actions and paths; no policy, no gate"], errors
+assert ("DELETE", "/installation/token", f"Bearer {TOKEN}") in w.calls, "and the read is still ended"
+print("ok  config.yaml's floors pass through to the gate, and floors it can't read fail it")
+
 print("OK: 0 failing case(s)")

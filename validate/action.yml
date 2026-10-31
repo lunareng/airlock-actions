@@ -1,7 +1,7 @@
 name: airlock validate
 description: >
   Check a policy repo's files (repos/*.yaml, AUTONOMY.yaml, roles/*/role.yaml) against the schemas Airlock publishes,
-  fetched at run time, and the charter's rules every tenant shares: floors, carve-outs only tightening, every role's
+  fetched at run time, and the charter's rules every tenant shares: your config.yaml floors, carve-outs only tightening, every role's
   repositories and files. Each problem is an error annotation on its file and line. With `base`, a loosening since
   that commit is a problem too. Run it in a checkout of the policy repo (fetch-depth 0 when `base` is set).
 inputs:
