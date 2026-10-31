@@ -36,8 +36,9 @@ PLACEHOLDER = re.compile(r"<airlock:(\w+)>")
 BEGIN, END = "<!-- autonomy:begin", "<!-- autonomy:end -->"
 NEW_CLAUDE = "# CLAUDE.md\n\nGuidance for Claude Code in this repository.\n"
 FIRST_BRANCH = "chore/autonomy-policy"
-LOGINS = re.compile(r'^[A-Za-z0-9*\[\]_.,\- ]+$')
-PERSON = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._-]*$")
+LOGINS = re.compile(r"[A-Za-z0-9*\[\]_.,\- ]+")
+PERSON = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._-]*")
+BRANCH = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]*")
 
 
 # One error for a setting or step that can't be trusted, the generator's own included: it stops the run and says why.
@@ -54,21 +55,26 @@ class Adopt:
         if not isinstance(a, dict):
             raise AdoptError("config.yaml adopt: not a mapping")
         self.runner = str(a.get("runner", "ubuntu-latest"))
-        if not generate.LABEL.match(self.runner):
+        if not generate.LABEL.fullmatch(self.runner):
             raise AdoptError("config.yaml adopt.runner: one runner label")
         self.runner_note = f" # {generate.one_line(a['runner_note'], 'adopt.runner_note')}" if a.get("runner_note") is not None else ""
         self.agent_logins = str(a.get("agent_logins", "*[bot]"))
-        if not LOGINS.match(self.agent_logins):
+        if not LOGINS.fullmatch(self.agent_logins):
             raise AdoptError("config.yaml adopt.agent_logins: logins and * only")
         self.human_owner_name = str(a.get("human_owner_name", "the human owner"))
-        if not PERSON.match(self.human_owner_name):
-            raise AdoptError("config.yaml adopt.human_owner_name: a plain name")
+        # Unquoted in the workflow (as Lunar's has always been), so it must read back as itself: not No, null or 123.
+        if not PERSON.fullmatch(self.human_owner_name) or generate.yaml.safe_load(self.human_owner_name) != self.human_owner_name:
+            raise AdoptError("config.yaml adopt.human_owner_name: a plain name that YAML reads as text")
         section = Path(generate.one_line(a.get("claude_section", "seeds/CLAUDE-section.md"), "adopt.claude_section"))
         if section.is_absolute() or ".." in section.parts:
             raise AdoptError("config.yaml adopt.claude_section: a path inside the policy repo")
         self.section_path = section
-        self.skip = set(a.get("skip") or [])
+        self.skip = set(generate.strings(a.get("skip") or [], "adopt.skip"))
         self.branch = generate.one_line(a.get("branch", "airlock/adopt"), "adopt.branch")
+        # rollout force-pushes this branch: never main, never something git would read as another ref.
+        if not BRANCH.fullmatch(self.branch) or self.branch in ("main", "master", "HEAD") or ".." in self.branch or self.branch.endswith((".lock", "/")):
+            raise AdoptError("config.yaml adopt.branch: a branch of its own, not main")
+        self._generated = None
 
     def values(self) -> dict:
         return {"runner": self.runner, "runner_note": self.runner_note, "ref": self.gen.ref,
@@ -91,18 +97,35 @@ class Adopt:
         if not p.is_file():
             raise AdoptError(f"no {self.section_path} in the policy checkout (config.yaml adopt.claude_section)")
         text = p.read_text().rstrip("\n")
-        if not text.startswith(BEGIN) or not text.endswith(END) or text.count(BEGIN) != 1:
+        if not text.startswith(BEGIN) or not text.endswith(END) or text.count(BEGIN) != 1 or text.count(END) != 1:
             raise AdoptError(f"{self.section_path}: must start with '{BEGIN} ...' and end with '{END}'")
         return text
 
     def generated(self) -> dict[Path, str]:
         """What the policy produces, and proof the checkout has it committed: adopting from stale files is refused."""
+        if self._generated is not None:
+            return self._generated
         files = generate.render(self.root, self.gen)
         extra = generate.leftovers(self.root, self.gen, files)
         stale = [p for p, body in files.items() if not p.is_file() or p.read_text() != body] + extra
         if stale:
             raise AdoptError(f"{len(stale)} generated file(s) are stale, e.g. {stale[0].relative_to(self.root)}: run generate --write and merge it first")
+        self._generated = files
         return files
+
+    def merged(self) -> None:
+        """The policy that merged: the checkout on main with nothing uncommitted, so what goes out is what main holds."""
+        branch = sh("git", "rev-parse", "--abbrev-ref", "HEAD", cwd=self.root, check=False).stdout.strip()
+        if branch != "main":
+            raise AdoptError("run from the policy checkout's main (the policy that merged)")
+        if sh("git", "status", "--porcelain", cwd=self.root).stdout.strip():
+            raise AdoptError("the policy checkout has uncommitted changes: run from main as merged")
+
+    def owned(self, org: str, name: str) -> None:
+        """The repository's policy file names it in this org, so a mistyped --org reaches nothing."""
+        doc = generate.load(self.root / "repos" / f"{name}.yaml")
+        if doc.get("repo") != f"{org}/{name}":
+            raise AdoptError(f"repos/{name}.yaml says repo: {doc.get('repo')!r}, not {org}/{name}")
 
     def codeowners(self, name: str) -> str:
         return self.generated()[self.gen.paths["codeowners"] / f"{name}.CODEOWNERS"]
@@ -118,6 +141,8 @@ class Adopt:
 def splice(claude_md: str | None, section: str) -> str:
     """CLAUDE.md with the section in place of its old one, or appended; the rest of the file as it was."""
     s = claude_md if claude_md is not None else NEW_CLAUDE
+    if s.count(BEGIN) > 1 or (BEGIN in s and END not in s[s.index(BEGIN):]):
+        raise AdoptError(f"CLAUDE.md has '{BEGIN}' without one matching '{END}': fix it by hand")
     if BEGIN in s:
         return re.sub(re.escape(BEGIN) + r".*?" + re.escape(END), lambda m: section, s, count=1, flags=re.S)
     return s.rstrip("\n") + "\n\n" + section + "\n"
@@ -171,17 +196,33 @@ def clone(org: str, name: str, d: Path, tries: int = 1, wait: int = 10) -> None:
     raise AdoptError(f"{org}/{name}: clone failed")
 
 
-def commit(d: Path, branch: str, message: str) -> None:
+ADOPTED = ["CLAUDE.md", ".github/workflows/autonomy-gate.yml", ".github/workflows/claude-review.yml"]
+
+
+def commit(d: Path, branch: str, message: str, only: list[str] | None = None) -> None:
     sh("git", "checkout", "-q", "-B", branch, cwd=d)
-    sh("git", "add", "-A", cwd=d)
+    sh("git", "add", "-A", "--", *(only or ["."]), cwd=d)
     sh("git", "commit", "-q", "-m", message, cwd=d)
+
+
+def same_as_remote(d: Path, branch: str) -> bool:
+    """The branch on GitHub already holds this tree (an open PR, unchanged): pushing again would only re-run checks."""
+    if not sh("git", "ls-remote", "--heads", "origin", branch, cwd=d).stdout.strip():
+        return False
+    sh("git", "fetch", "-q", "origin", branch, cwd=d)
+    return sh("git", "rev-parse", "FETCH_HEAD^{tree}", cwd=d).stdout == sh("git", "rev-parse", "HEAD^{tree}", cwd=d).stdout
 
 
 def rollout(ad: Adopt, org: str, signal: str, repos: list[str]) -> int:
     if not signal.strip():
         raise AdoptError("--signal: what asked for this rollout (an issue, or a person's words and the date); it heads every PR")
+    ad.merged()
     if not repos:
         repos = [p.stem for p in sorted((ad.root / "repos").glob("*.yaml")) if p.stem not in ad.skip]
+    for name in repos:
+        if not (ad.root / "repos" / f"{name}.yaml").is_file():
+            raise AdoptError(f"no repos/{name}.yaml in the policy")
+        ad.owned(org, name)
     ad.workflows(), ad.section()  # every setting checked before the first clone
     title = f"Adopt {ad.gen.repo}'s autonomy files: the gate, Claude review, the CLAUDE.md section"
     body = (f"## Signal\n{signal.strip()}\n\n## What changes\nThis repository's copies of {ad.gen.repo}'s autonomy files, "
@@ -198,11 +239,12 @@ def rollout(ad: Adopt, org: str, signal: str, repos: list[str]) -> int:
                 clone(org, name, d)
                 write_files(d, ad)
                 prettier(d, name)
-                if not sh("git", "status", "--porcelain", cwd=d).stdout.strip():
+                if not sh("git", "status", "--porcelain", "--", *ADOPTED, cwd=d).stdout.strip():
                     print(f"{name}: up to date")
                     continue
-                commit(d, ad.branch, f"{title}\n\nFrom {ad.gen.repo} with lunareng/airlock-actions adopt/adopt.py rollout.")
-                sh("git", "push", "-q", "-f", "origin", ad.branch, cwd=d)
+                commit(d, ad.branch, f"{title}\n\nFrom {ad.gen.repo} with lunareng/airlock-actions adopt/adopt.py rollout.", ADOPTED)
+                if not same_as_remote(d, ad.branch):
+                    sh("git", "push", "-q", "-f", "origin", ad.branch, cwd=d)
                 print(f"{name}: PR #{open_pr(org, name, ad.branch, title, body)}")
             except AdoptError as e:
                 failed += 1
@@ -218,9 +260,8 @@ def new_repo(ad: Adopt, org: str, name: str, wait: int = 5) -> int:
         raise AdoptError(f"no repos/{name}.yaml: merge the repository's policy first")
     if not re.search(r"^owner_role:", policy.read_text(), re.M):
         raise AdoptError(f"{name}: no owner_role, not a proposed repository")
-    branch = sh("git", "rev-parse", "--abbrev-ref", "HEAD", cwd=ad.root, check=False).stdout.strip()
-    if branch != "main":
-        raise AdoptError("run from the policy checkout's main (the policy that merged)")
+    ad.merged()
+    ad.owned(org, name)
     codeowners, protection = ad.codeowners(name), ad.protection(name)
     workflows, section = ad.workflows(), ad.section()
 
@@ -279,7 +320,9 @@ def new_repo(ad: Adopt, org: str, name: str, wait: int = 5) -> int:
 
 
 def protect(ad: Adopt, org: str, name: str, dry_run: bool) -> int:
+    ad.merged()
     body = ad.protection(name)
+    ad.owned(org, name)
     if dry_run:
         print(f"PUT /repos/{org}/{name}/branches/main/protection")
         print(body, end="")
