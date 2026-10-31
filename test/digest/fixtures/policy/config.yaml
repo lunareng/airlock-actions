@@ -1,0 +1,19 @@
+# An invented tenant's policy repo (acme/policy) for the digest's tests.
+human_owner: "@wile"
+required_checks:
+  default: ["autonomy-gate", "claude-review"]
+  policy: ["validate"]
+  archive: []
+  rockets: ["autonomy-gate", "claude-review", "Test"]
+agent_markers:
+  logins: []
+  branch_prefixes: ["agent/"]
+airlock:
+  url: https://airlock.example.com
+  app_name: acme-agents
+  app_login: "acme-agents[bot]"
+catch_logs:
+  - {repo: acme/handbook, path: ops/LEARNINGS.md, marker: Wile}
+digest:
+  skip_repos: [archive]
+  router_logins: ["acme-router[bot]"]
