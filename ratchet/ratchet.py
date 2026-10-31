@@ -371,7 +371,11 @@ def run(ctx: Ctx, weeks: int, now: datetime | None = None) -> dict:
     now = now or datetime.now(timezone.utc)
     today = now.date().isoformat()
     report = {"as_of": today, "repos": {}, "judges": {}, "proposed": [], "demoted": [], "judge_catches": []}
-    proposals = {i["title"] for i in (gh(f"repos/{ctx.policy_repo}/issues", state="open", labels="proposal", per_page=100) or [])}
+    open_proposals = gh(f"repos/{ctx.policy_repo}/issues", state="open", labels="proposal", per_page=100)
+    # Unreadable open proposals would let every eligible repo get a duplicate: none are opened this run.
+    if open_proposals is None:
+        print(f"promotion: {ctx.policy_repo}'s open proposals are unreadable; no proposal is opened this run", file=sys.stderr)
+    proposals = {i["title"] for i in open_proposals or []}
     judge_issues = gh(f"repos/{ctx.policy_repo}/issues", state="all", labels="judge-missing", per_page=100, since=(now - timedelta(weeks=26)).isoformat())
     open_prs = gh(f"repos/{ctx.policy_repo}/pulls", state="open", per_page=100)
     if judge_issues is None or open_prs is None:
@@ -400,7 +404,9 @@ def run(ctx: Ctx, weeks: int, now: datetime | None = None) -> dict:
         ev = evidence(issues, logs_for(ctx, repo), now, policy_start(ctx, path, policy))
         d = decide(repo, policy, ev, proposals, weeks)
         report["repos"][path.stem] = {"default": policy.get("default"), "clean_weeks": ev["clean_weeks"], "catches": ev["catches"], "decision": d["why"]}
-        if d["promote"]:
+        if d["promote"] and open_proposals is None:
+            report["repos"][path.stem]["decision"] += "; no proposal: the open proposals are unreadable"
+        elif d["promote"]:
             body = proposal_body(repo, policy, ev, UP[policy["default"]], ctx.cfg["owner_name"], weeks)
             report["proposed"].append(d["promote"])
             if not ctx.dry_run:

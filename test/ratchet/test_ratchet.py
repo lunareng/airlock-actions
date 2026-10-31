@@ -253,6 +253,20 @@ try:
     finally:
         ratchet.subprocess.run = real_run
     assert writes == [] and dry == rep, (writes, dry)
+
+    # Open proposals it can't read: no proposal is opened (each would be a duplicate), and the rest still runs.
+    writes.clear()
+    ratchet.gh = lambda path, **params: None if params.get("labels") == "proposal" else stand_in(path, **params)
+    ratchet.subprocess.run = fake_run
+    try:
+        blind = ratchet.run(ratchet.Ctx(repo_dir, "acme", "acme/policy", "ratchet", cfg, dry_run=False), cfg["weeks"], now)
+    finally:
+        ratchet.subprocess.run = real_run
+        ratchet.gh = stand_in
+    assert blind["proposed"] == [] and blind["repos"]["anvils"]["decision"].endswith("; no proposal: the open proposals are unreadable"), blind
+    assert ("POST", "repos/acme/policy/issues") in [(w[0], w[1]) for w in writes], "the judge catch still opens"
+    assert not any(w[2].get("labels") == ["proposal", "ratchet"] for w in writes if isinstance(w[2], dict)), writes
+    assert blind["demoted"] == rep["demoted"], "demotions still run"
 finally:
     shutil.rmtree(tmp)
 print("OK: ratchet run")

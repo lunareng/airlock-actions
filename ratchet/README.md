@@ -9,7 +9,7 @@
 
 ## Use it
 
-> Not in a release yet: `v1` doesn't carry `ratchet/`. Until a release does, pin `uses:` to the commit on `main` that added it.
+> Not in a release yet: `v1` doesn't carry `ratchet/`, so the example pins `ratchet/` to a commit on `main` (`<sha>`) until a release does.
 
 In your policy repo, `.github/workflows/role-ratchet.yml`, with a `roles/ratchet/role.yaml` whose `writes` are `repos:` the policy repo and every repository it may demote, `issues: [create]` and `pull_requests: [open, merge]`:
 
@@ -42,7 +42,7 @@ jobs:
         run: |
           echo "::error::Airlock handed ratchet no token; the run stops here"
           exit 1
-      - uses: lunareng/airlock-actions/ratchet@v1
+      - uses: lunareng/airlock-actions/ratchet@<sha> # a commit on main, until a release carries ratchet/
         with:
           token: ${{ steps.airlock.outputs.token }}
           dry-run: ${{ inputs.dry_run }}
@@ -60,11 +60,11 @@ jobs:
 | --- | --- |
 | `report` | The path of the run's decisions as JSON: each repository's clock and decision, each judge's last runs, and what was proposed, demoted and caught. |
 
-The organization is the workflow's own (`github.repository_owner`), and proposals, catches and policy PRs go in the workflow's repository (`github.repository`). It stops, writing nothing, when the token is empty, the checkout is shallow or has no `config.yaml` and `repos/`, or its settings below are malformed.
+The organization is the workflow's own (`github.repository_owner`), and proposals, catches and policy PRs go in the workflow's repository (`github.repository`). When it can't read the open proposals it opens none that run, since each could be a duplicate. It stops, writing nothing, when the token is empty, the checkout is shallow or has no `config.yaml` and `repos/`, or its settings below are malformed.
 
 ## Settings
 
-In your policy repo's `config.yaml`. Every key is optional, and the defaults are shown.
+In your policy repo's `config.yaml`. Every key is optional. The `ratchet` block shows the defaults, and `catch_logs` (empty by default) shows an example.
 
 ```yaml
 # Files where a line "- YYYY-MM-DD ..." naming `marker` (a whole word) records a catch in `repo`. The digest reads
