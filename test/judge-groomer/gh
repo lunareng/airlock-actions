@@ -1,0 +1,21 @@
+#!/usr/bin/env python3
+"""A fake `gh` for the groomer judge's tests: `gh api <path>?<query>` answered from GH_ANSWERS (fixtures/github.json's
+shape), every call logged to GH_LOG. The first rule that fits answers; page 2 onwards of a list is empty; anything
+else is GitHub's 404."""
+import json, os, sys, urllib.parse
+with open(os.environ["GH_LOG"], "a") as log:
+    log.write(json.dumps(sys.argv[1:]) + "\n")
+if sys.argv[1:2] != ["api"] or len(sys.argv) != 3:
+    sys.stderr.write("fake gh: only `gh api <path>`\n"); sys.exit(2)
+path, _, query = sys.argv[2].partition("?")
+params = {k: v[0] for k, v in urllib.parse.parse_qs(query).items()}
+for rule in json.load(open(os.environ["GH_ANSWERS"]))["rules"]:
+    if rule["path"] != path or any(params.get(k) != v for k, v in rule.get("params", {}).items()):
+        continue
+    if not all(s in params.get("q", "") for s in rule.get("q_contains", [])):
+        continue
+    answer = rule["answer"]
+    if isinstance(answer, list) and params.get("page", "1") != "1":
+        answer = []
+    print(json.dumps(answer)); sys.exit(0)
+sys.stderr.write("gh: Not Found (HTTP 404)\n"); sys.exit(1)
