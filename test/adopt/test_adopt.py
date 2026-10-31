@@ -56,6 +56,12 @@ class World:
         bin_.mkdir()
         (bin_ / "gh").write_text(f'#!/bin/sh\nexec "{sys.executable}" "{FAKE}" "$@"\n')
         (bin_ / "gh").chmod(0o755)
+        # npm and npx stand-ins: a repository using prettier gets node_modules/ in its clone, which must never be committed.
+        (bin_ / "npm").write_text('#!/bin/sh\nwhile [ $# -gt 0 ]; do if [ "$1" = --prefix ]; then mkdir -p "$2/node_modules"; '
+                                  'echo x > "$2/node_modules/junk"; fi; shift; done\n')
+        (bin_ / "npx").write_text("#!/bin/sh\nexit 0\n")
+        (bin_ / "npm").chmod(0o755)
+        (bin_ / "npx").chmod(0o755)
         gitconfig = self.tmp / "gitconfig"
         gitconfig.write_text("[user]\n\tname = Acme Tester\n\temail = tester@acme.example\n[init]\n\tdefaultBranch = main\n[protocol \"file\"]\n\tallow = always\n")
         self.env = {**{k: v for k, v in os.environ.items() if k != "GITHUB_REPOSITORY"}, "PATH": f"{bin_}:{os.environ['PATH']}",
@@ -154,6 +160,12 @@ def _():
         ("adopt.runner_note", lambda c: c["adopt"].update(runner_note="two\nlines")),
         ("adopt.claude_section", lambda c: c["adopt"].update(claude_section="../outside.md")),
         ("airlock_actions.ref", lambda c: c["airlock_actions"].update(ref="main")),
+        ("adopt.human_owner_name", lambda c: c["adopt"].update(human_owner_name="No")),
+        ("adopt.human_owner_name", lambda c: c["adopt"].update(human_owner_name="123")),
+        ("adopt.skip", lambda c: c["adopt"].update(skip="policy")),
+        ("adopt.branch", lambda c: c["adopt"].update(branch="main")),
+        ("adopt.branch", lambda c: c["adopt"].update(branch="a..b")),
+        ("adopt.agent_logins", lambda c: c["adopt"].update(agent_logins="acme-*[bot]\n")),
     ]
     for key, edit in bad:
         d = Path(tempfile.mkdtemp()) / "p"
@@ -167,12 +179,13 @@ def _():
             raise AssertionError(f"{key}: accepted")
     d = Path(tempfile.mkdtemp()) / "p"
     shutil.copytree(FIXTURE, d)
-    (d / "seeds/CLAUDE-section.md").write_text("## No markers\n")
-    try:
-        adopt.Adopt(d, "acme/policy").section()
-        raise AssertionError("a section without markers was accepted")
-    except adopt.AdoptError as e:
-        assert "must start with" in str(e)
+    for text in ("## No markers\n", f"{adopt.BEGIN} -->\none\n{adopt.END}\ntwo\n{adopt.END}\n"):
+        (d / "seeds/CLAUDE-section.md").write_text(text)
+        try:
+            adopt.Adopt(d, "acme/policy").section()
+            raise AssertionError(f"accepted: {text!r}")
+        except adopt.AdoptError as e:
+            assert "must start with" in str(e)
 
 
 @case("splice: replaces the old section and keeps the rest; appends where there is none; starts a new CLAUDE.md")
@@ -192,7 +205,7 @@ def _():
                    "CLAUDE.md": "# CLAUDE.md\n\nThe api.\n\n<!-- autonomy:begin (old) -->\nold\n<!-- autonomy:end -->\n"})
     w.repo("web", {".github/workflows/autonomy-gate.yml": files["autonomy-gate.yml"], ".github/workflows/claude-review.yml": files["claude-review.yml"],
                    "CLAUDE.md": adopt.splice(None, SECTION)})
-    w.repo("docs", {"README.md": "docs\n"})
+    w.repo("docs", {"README.md": "docs\n", "package.json": '{"devDependencies": {"prettier": "3.0.0"}}\n'})
     w.repo("policy", {"README.md": "the policy\n"})
     r = w.run("rollout", "--org", "acme", "--policy", str(w.policy), "--signal", "acme/policy#9 (Dana, 2026-10-30)")
     assert r.returncode == 1, "blog has no repository yet: the run reports it and fails"
@@ -206,6 +219,10 @@ def _():
     assert w.show("api", "airlock/adopt", "CLAUDE.md") == f"# CLAUDE.md\n\nThe api.\n\n{SECTION}\n"
     assert w.show("docs", "airlock/adopt", "CLAUDE.md") == adopt.splice(None, SECTION)
     assert w.show("api", "airlock/adopt", "README.md") == "api\n" and not w.has_branch("web", "airlock/adopt")
+    tree = subprocess.run(["git", "--git-dir", str(w.remotes / "acme/docs.git"), "ls-tree", "-r", "--name-only", "airlock/adopt"],
+                          capture_output=True, text=True, check=True).stdout.split()
+    assert "node_modules/junk" not in tree and sorted(tree) == sorted(["README.md", "package.json", *adopt.ADOPTED]), tree
+    head = w.git("--git-dir", str(w.remotes / "acme/api.git"), "rev-parse", "airlock/adopt", cwd=w.tmp)
     pr = w.pulls()[0]
     assert pr["head"] == "airlock/adopt" and pr["base"] == "main" and pr["body"].startswith("## Signal\nacme/policy#9 (Dana, 2026-10-30)\n\n## What changes\n")
     assert "acme/policy" in pr["title"] and "seeds/CLAUDE-section.md" in pr["body"]
@@ -213,6 +230,17 @@ def _():
     r = w.run("rollout", "--org", "acme", "--policy", str(w.policy), "--signal", "again", "api")
     assert r.returncode == 0 and "api: PR #1" in r.stdout, (r.stdout, r.stderr)
     assert len(w.pulls()) == 2, "the open PR is reused, not opened twice"
+    assert w.git("--git-dir", str(w.remotes / "acme/api.git"), "rev-parse", "airlock/adopt", cwd=w.tmp) == head, \
+        "the open PR already holds this tree: no new commit, no re-run of its checks, no dismissed approval"
+
+
+@case("rollout: a CLAUDE.md with a begin marker and no end is an error for that repository, never 'up to date'")
+def _():
+    w = World()
+    w.repo("api", {"CLAUDE.md": "# CLAUDE.md\n\n<!-- autonomy:begin (old) -->\nno end\n"})
+    r = w.run("rollout", "--org", "acme", "--policy", str(w.policy), "--signal", "x", "api")
+    assert r.returncode == 1 and "without one matching" in r.stderr and "up to date" not in r.stdout, (r.stdout, r.stderr)
+    assert not w.has_branch("api", "airlock/adopt")
 
 
 @case("rollout refuses without a signal, or with a stale policy setting, before touching GitHub")
@@ -225,6 +253,18 @@ def _():
     assert r.returncode == 1 and "adopt.runner" in r.stderr and w.calls() == [], r.stderr
     r = w.run("rollout", "--org", "acme/evil", "--policy", str(w.policy), "--signal", "x")
     assert r.returncode == 1 and "--org" in r.stderr
+    w = World()
+    r = w.run("rollout", "--org", "acne", "--policy", str(w.policy), "--signal", "x", "api")
+    assert r.returncode == 1 and "repos/api.yaml says repo: 'acme/api', not acne/api" in r.stderr and w.calls() == [], r.stderr
+    r = w.run("rollout", "--org", "acme", "--policy", str(w.policy), "--signal", "x", "shop")
+    assert r.returncode == 1 and "no repos/shop.yaml" in r.stderr and w.calls() == [], r.stderr
+    w.git("checkout", "-q", "-b", "proposal", cwd=w.policy)
+    r = w.run("rollout", "--org", "acme", "--policy", str(w.policy), "--signal", "x")
+    assert r.returncode == 1 and "main" in r.stderr and w.calls() == [], r.stderr
+    w.git("checkout", "-q", "main", cwd=w.policy)
+    (w.policy / "seeds/CLAUDE-section.md").write_text("<!-- autonomy:begin -->\nunmerged\n<!-- autonomy:end -->\n")
+    r = w.run("rollout", "--org", "acme", "--policy", str(w.policy), "--signal", "x")
+    assert r.returncode == 1 and "uncommitted" in r.stderr and w.calls() == [], r.stderr
 
 
 @case("new-repo: creates the repository, opens its first PR with the policy's files and seeds, then protects main")
@@ -268,6 +308,7 @@ def _():
     assert r.returncode == 1 and "main" in r.stderr, r.stderr
     w.git("checkout", "-q", "main", cwd=w.policy)
     (w.policy / "generated/codeowners/blog.CODEOWNERS").write_text("* @someone\n")
+    w.git("commit", "-q", "-am", "stale", cwd=w.policy)
     r = w.run("new-repo", "--org", "acme", "--policy", str(w.policy), "--repo", "acme/policy", "blog")
     assert r.returncode == 1 and "stale" in r.stderr, r.stderr
     assert w.calls() == []
@@ -286,6 +327,7 @@ def _():
     r = w.run("protect", "--org", "acme", "--policy", str(w.policy), "--repo", "acme/policy", "shop")
     assert r.returncode == 1 and "no repos/shop.yaml" in r.stderr
     (w.policy / "generated/branch-protection/web.json").write_text("{}\n")
+    w.git("commit", "-q", "-am", "stale", cwd=w.policy)
     r = w.run("protect", "--org", "acme", "--policy", str(w.policy), "--repo", "acme/policy", "web")
     assert r.returncode == 1 and "stale" in r.stderr and len(w.calls()) == 1, r.stderr
 

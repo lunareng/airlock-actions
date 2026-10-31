@@ -17,12 +17,19 @@ python3 $A/adopt/adopt.py render   --policy $P --out /tmp/acme-workflows
 
 | Command | What it does | Needs |
 | --- | --- | --- |
-| `rollout` | Opens one PR per repository, on `adopt.branch`, wherever its `.github/workflows/autonomy-gate.yml`, `.github/workflows/claude-review.yml` or the autonomy section of `CLAUDE.md` differ from the policy's. A repository that already matches gets no PR, and an open PR is updated, not duplicated. A repository whose `package.json` uses prettier gets the files formatted with its own prettier. `--signal` heads every PR's `## Signal`. | push and PR rights on each repository |
+| `rollout` | Opens one PR per repository, on `adopt.branch`, wherever its `.github/workflows/autonomy-gate.yml`, `.github/workflows/claude-review.yml` or the autonomy section of `CLAUDE.md` differ from the policy's. It commits those three files and nothing else. A repository that already matches gets no PR. An open PR is updated rather than duplicated, and it isn't pushed again if it already holds the same files. A repository whose `package.json` uses prettier gets the files formatted with its own prettier. `--signal` heads every PR's `## Signal`. | push and PR rights on each repository |
 | `new-repo` | After `repos/<name>.yaml` (with an `owner_role`) has merged: creates the repository (private, `main`, rebase merges only, auto-merge on, branches deleted on merge), then opens its first PR on `chore/autonomy-policy`. That PR has `AUTONOMY.yaml` (the policy file), `.github/CODEOWNERS` (the generated one), the two workflows, `seeds/<name>/` and the CLAUDE.md section. Then it protects `main`. You can run it again safely: it creates the repository only if it's missing, populates it only once, and protects it every time. | an org owner |
 | `protect` | `PUT /repos/<org>/<repo>/branches/main/protection` with the repository's generated body. `--dry-run` prints the request instead. | repository admin |
 | `render` | Writes the two workflows as this policy renders them, so you can read them. | nothing |
 
-Each tool fails closed. A missing or malformed setting stops it before it calls GitHub. So does a stale generated file: run [generate](../generate/README.md) with `--write` and merge that first. `new-repo` also stops if the policy checkout isn't on `main`. When `rollout` can't clone or push one repository, it says so and moves on to the next, then exits 1.
+Each tool fails closed, and stops before it calls GitHub if any of these hold:
+
+- A setting is missing or malformed.
+- The policy checkout isn't on `main`, or has uncommitted changes, so what goes out might not be what merged.
+- A repository's `repos/<name>.yaml` doesn't say `repo: <org>/<name>`, which catches a mistyped `--org`.
+- For `new-repo` and `protect`, a generated file is stale. Run [generate](../generate/README.md) with `--write` and merge that first.
+
+When `rollout` can't clone or push one repository, or finds a `CLAUDE.md` with a begin marker and no end, it says so and moves on to the next, then exits 1.
 
 ## What every repository gets
 
@@ -38,10 +45,10 @@ The tools also read generate's settings: `airlock_actions.ref` and `.note` pin t
 | `adopt.runner` | `ubuntu-latest` | The runner label the gate and review jobs use. |
 | `adopt.runner_note` | | A one-line comment after the first `runs-on:` in each workflow. |
 | `adopt.agent_logins` | `*[bot]` | The logins whose PRs the review verdict binds (review's `agent-logins`). |
-| `adopt.human_owner_name` | `the human owner` | Who merges L1/L2 PRs, as the reviewer names them (review's `human-owner`). |
+| `adopt.human_owner_name` | `the human owner` | Who merges L1/L2 PRs, as the reviewer names them (review's `human-owner`). It must be plain text that YAML reads as itself: not `No`, `null` or `123`. |
 | `adopt.claude_section` | `seeds/CLAUDE-section.md` | The CLAUDE.md section, a file in the policy repo. |
-| `adopt.skip` | `[]` | Repositories `rollout` leaves out when given none, such as the policy repo itself or an archived one. |
-| `adopt.branch` | `airlock/adopt` | The branch `rollout` pushes. |
+| `adopt.skip` | `[]` | A list of repositories `rollout` leaves out when given none, such as the policy repo itself or an archived one. |
+| `adopt.branch` | `airlock/adopt` | The branch `rollout` force-pushes. It can't be `main`. |
 
 ```yaml
 # acme's config.yaml
