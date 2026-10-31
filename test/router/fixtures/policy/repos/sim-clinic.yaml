@@ -1,0 +1,4 @@
+schema: 1
+repo: acme/sim-clinic
+owner_role: sim-engineer
+default: L3

@@ -1,0 +1,24 @@
+# The signal router's tests (router/): every rule's decisions, the config check, a whole dry-run pass against a
+# stand-in GitHub and the action's own rules, all on the invented acme tenant (test/router/fixtures/policy). No
+# network, no token: the suite runs the pull request's code with nothing to reach.
+name: test router
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: test-router-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  router:
+    runs-on: ubuntu-latest # a public repository: GitHub-hosted runners, free, and the self-hosted pools take no public repositories
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - run: pip install --quiet pyyaml==6.0.3
+      - run: python -I test/router/test_router.py

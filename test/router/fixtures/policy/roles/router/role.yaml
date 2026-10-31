@@ -1,0 +1,11 @@
+schema: 1
+role: router
+kind: workflow
+level: L4
+identity:
+  github_login: "acme-router[bot]"   # its own App before Airlock; its older comments are under it
+  key_store: airlock
+writes:
+  repos: [acme/api, acme/web, acme/cli, acme/sim-shop, acme/sim-clinic, acme/station, acme/k8s, acme/infra, acme/policy, acme/service]
+  issues: [create, label, edit_body, comment, close]
+  dispatch: true

@@ -1,0 +1,74 @@
+name: airlock signal router
+description: >
+  One pass of the signal router over a tenant's repositories: tool-requests, sim bugs, reviews, digest answers,
+  failing CI on main, failed role runs, merges over a FAIL verdict and gate re-runs after a policy change become
+  issues, labels, comments and role dispatches. Run it in a checkout of the policy repo (fetch-depth 0 for the
+  gate_rerun rule), from the router role's own workflow, with the token the Airlock action minted for that role.
+  The organization is the policy repo's owner; where each rule applies is the policy repo's router.yaml
+  (router/README.md). A config that fails its checks, or a missing token, routes nothing.
+inputs:
+  token:
+    description: the GitHub token for the pass (the Airlock action's `token` output for the router role)
+    required: true
+  dry-run:
+    description: "true: read GitHub and print the writes it would make, writing nothing. false: make them."
+    default: "true"
+  config:
+    description: the router's config, relative to the policy repo's checkout
+    default: router.yaml
+  role:
+    description: the router's role name in the policy repo (roles/<role>/role.yaml)
+    default: router
+outputs:
+  report:
+    description: the path of the pass's JSON report (routed, dispatched, closed, routed_within_1h, writes)
+    value: ${{ steps.route.outputs.report }}
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      with:
+        python-version: "3.12"
+    - shell: bash
+      run: |
+        pip install --quiet pyyaml==6.0.3
+        # The router runs python -I, which never reads the user site pip falls back to when site-packages isn't writable.
+        python -I -c 'import yaml' || { echo "::error title=signal router::pyyaml isn't importable by an isolated Python"; exit 1; }
+    - name: gh (a runner image without it; pinned checksum, as the gate installs it)
+      shell: bash
+      env:
+        GH_VERSION: "2.101.0"
+        GH_SHA256: "9bca2d1c16825f109907a23307628a2f0698fbf99662b73a5cf0b020293072b8"
+      run: |
+        set -euo pipefail
+        command -v gh >/dev/null && exit 0
+        dir="$RUNNER_TEMP/gh-${GH_VERSION}"; mkdir -p "$dir"
+        curl -sSfL -o "$dir/gh.tar.gz" "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz"
+        echo "${GH_SHA256}  $dir/gh.tar.gz" | sha256sum -c -
+        tar xzf "$dir/gh.tar.gz" -C "$dir" --strip-components=2 "gh_${GH_VERSION}_linux_amd64/bin/gh"
+        echo "$dir" >> "$GITHUB_PATH"
+    - name: route
+      id: route
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        DRY_RUN: ${{ inputs.dry-run }}
+        CONFIG: ${{ inputs.config }}
+        ROLE: ${{ inputs.role }}
+        HERE: ${{ github.action_path }}
+      run: |
+        set -uo pipefail
+        if [ -z "$GH_TOKEN" ]; then echo "::error title=signal router::no token: the pass routes nothing"; exit 1; fi
+        case "$DRY_RUN" in
+          true) mode=(--dry-run) ;;
+          false) mode=() ;;
+          *) echo "::error title=signal router::dry-run is true or false, not '$DRY_RUN'"; exit 1 ;;
+        esac
+        report="$RUNNER_TEMP/router.json"
+        echo "report=$report" >> "$GITHUB_OUTPUT"
+        # The router's own exit, not tee's: a refused gate re-run fails the pass, after the report.
+        status=0
+        python -I "$HERE/router.py" "${mode[@]}" --policy-dir "$GITHUB_WORKSPACE" --policy-repo "$GITHUB_REPOSITORY" \
+          --config "$GITHUB_WORKSPACE/$CONFIG" --role "$ROLE" | tee "$report" || status=$?
+        { echo '## Signal router'; echo; echo '```json'; cat "$report"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+        exit "$status"

@@ -1,0 +1,7 @@
+schema: 1
+role: ops-engineer
+level: L3
+identity:
+  github_login: "acme-ops-engineer[bot]"
+writes:
+  repos: [acme/k8s, acme/infra]

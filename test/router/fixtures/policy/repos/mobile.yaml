@@ -1,0 +1,4 @@
+schema: 1
+repo: acme/mobile
+owner_role: mobile-engineer
+default: L3

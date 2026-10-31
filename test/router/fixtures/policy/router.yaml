@@ -1,0 +1,31 @@
+# acme's router config (router/README.md documents every key).
+product_bugs:
+  repos: [acme/api, acme/web]
+  sim_repos:
+    sim-shop: product:shop
+    sim-clinic: product:clinic
+tool_requests: [acme/api, acme/web, acme/cli, acme/sim-shop, acme/sim-clinic, acme/station, acme/studio, acme/k8s, acme/mobile, acme/policy, acme/service]
+tool_request_label: product:core
+reviews: [acme/api, acme/web, acme/cli, acme/sim-shop, acme/station, acme/studio, acme/k8s, acme/infra, acme/marketing, acme/mobile, acme/policy, acme/service]
+delivered:
+  backfill: ["2026-10-19", "2026-11-01"]
+resume: true
+pr_budget:
+  default: 2
+  support-agent: 1
+  sales-agent: 1
+digest_answers:
+  role: clerk
+override: true
+deployer_login: "acme-deployer[bot]"
+clock_login: "acme-clock[bot]"
+gate_rerun:
+  repos: [acme/api, acme/web, acme/cli, acme/k8s, acme/infra, acme/policy, acme/service]
+  window_days: 7
+  max_per_pass: 20
+run_failed: [acme/policy]
+ci_main:
+  acme/api: product:core
+  acme/web: product:core
+  acme/sim-shop: product:shop
+  acme/sim-clinic: product:clinic

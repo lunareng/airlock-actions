@@ -1,0 +1,4 @@
+schema: 1
+repo: acme/infra
+owner_role: ops-engineer
+default: L2

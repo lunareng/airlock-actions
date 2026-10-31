@@ -1,0 +1,12 @@
+# acme's policy config: only the keys the router reads.
+human_owner: "@acme-owner"
+required_checks:
+  default: ["autonomy-gate", "claude-review"]
+  policy: ["validate"]   # the policy repo itself doesn't require claude-review
+  legacy: []             # archived, nothing runs
+  mobile: ["autonomy-gate", "claude-review", "Test"]
+agent_markers:
+  logins: []
+airlock:
+  url: https://airlock.example.com
+  app_login: "acme-airlock[bot]"
