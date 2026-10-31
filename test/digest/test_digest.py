@@ -38,12 +38,19 @@ assert cfg == {"skip_repos": {"archive"}, "router_logins": ["acme-router[bot]"],
 assert settings({}) == {"skip_repos": set(), "router_logins": [], "catch_logs": []}, "no block: nothing skipped, no catch log"
 for bad in ({"digest": ["x"]}, {"digest": {"skip_repo": ["x"]}}, {"digest": {"skip_repos": "archive"}},
             {"catch_logs": [{"repo": "acme/handbook", "path": "ops/LEARNINGS.md"}]}, {"catch_logs": [{"repo": "handbook", "path": "p", "marker": "m"}]},
-            {"catch_logs": {"repo": "acme/handbook"}}):
+            {"catch_logs": {"repo": "acme/handbook"}}, ["not", "a", "mapping"], {"airlock": "acme-agents[bot]"}, {"agent_markers": ["agent/"]},
+            {"agent_markers": {"branch_prefixes": "agent/"}}, {"required_checks": ["claude-review"]}, {"required_checks": {"default": "claude-review"}}):
     try:
         settings(bad)
     except ConfigError:
         continue
     raise AssertionError(f"accepted {bad}")
+assert settings(config, "acme")["catch_logs"] == cfg["catch_logs"], "a catch log in the caller's org"
+try:
+    settings({"catch_logs": [{"repo": "other/handbook", "path": "ops/LEARNINGS.md", "marker": "Wile"}]}, "acme")
+    raise AssertionError("accepted a catch log outside the caller's org")
+except ConfigError:
+    pass
 assert policy_repos(POLICY, "acme", cfg["skip_repos"]) == ["acme/anvils", "acme/handbook", "acme/policy", "acme/rockets"], "every repos/ file but the skipped, in the caller's org"
 print("OK: digest settings")
 
@@ -82,7 +89,7 @@ assert "· beep (" in override_line("rockets", mpr2, [anon, spoof, anyone], now,
 print("OK: digest overrides")
 
 # Catches: lines dated this week that name the log's marker as a whole word.
-log = "- 2026-10-27 · Wile · the thumbnail says USER vs ROLE\n- 2026-10-28 · Wiley · not this one\n- 2026-10-19 · Wile · last week\n* 2026-10-29 Wile caught the date"
+log = "- 2026-10-27 · Wile · the thumbnail says USER vs ROLE\n- 2026-10-28 · Wiley · not this one\n- 2026-10-19 · Wile · last week\n- 2026-13-40 · Wile · no such day\n* 2026-10-29 Wile caught the date"
 assert catch_lines(log, "Wile", monday, "handbook") == ["handbook 2026-10-27:· Wile · the thumbnail says USER vs ROLE", "handbook 2026-10-29:Wile caught the date"]
 print("OK: digest catches")
 
@@ -164,5 +171,18 @@ asked_for.clear()
 assert digest.main(["--dry-run", "--policy-dir", str(POLICY), "--policy-repo", "acme/policy", "--owner", ""]) == 2
 assert digest.main(["--dry-run", "--policy-dir", str(POLICY), "--policy-repo", "other/policy", "--owner", "acme"]) == 2
 assert digest.main(["--dry-run", "--policy-dir", str(POLICY / "repos"), "--policy-repo", "acme/policy", "--owner", "acme"]) == 2
+for repos_arg in ("rockets", "other/rockets", "acme/rockets,other/anvils"):
+    assert digest.main(["--dry-run", "--repos", repos_arg, "--policy-dir", str(POLICY), "--policy-repo", "acme/policy", "--owner", "acme"]) == 2, repos_arg
 assert asked_for == [], asked_for
+
+# A live run whose lookup of the week's open digest issues fails writes nothing, rather than a second digest.
+writes = []
+real_run = digest.subprocess.run
+digest.gh = lambda path, **params: None if params.get("labels") == "digest" else stand_in(path, **params)
+digest.subprocess.run = lambda cmd, *a, **kw: writes.append(cmd) or real_run(["true"])
+try:
+    assert digest.main(["--week-of", "2026-10-30", "--policy-dir", str(POLICY), "--policy-repo", "acme/policy", "--owner", "acme"]) == 1
+finally:
+    digest.subprocess.run = real_run
+assert writes == [], writes
 print("OK: digest fails closed")

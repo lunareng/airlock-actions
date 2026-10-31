@@ -95,8 +95,9 @@ def _strings(v, where: str) -> list[str]:
     return v
 
 
-def catch_logs(config: dict) -> list[dict]:
-    """config.yaml `catch_logs`: files in which a line `- YYYY-MM-DD ...` naming `marker` records a catch."""
+def catch_logs(config: dict, owner: str | None = None) -> list[dict]:
+    """config.yaml `catch_logs`: files in which a line `- YYYY-MM-DD ...` naming `marker` records a catch. With
+    `owner`, each file must be in that organization."""
     logs = config.get("catch_logs") or []
     if not isinstance(logs, list):
         raise ConfigError("catch_logs must be a list")
@@ -105,11 +106,22 @@ def catch_logs(config: dict) -> list[dict]:
             raise ConfigError(f"catch_logs[{i}] needs repo, path and marker, each a string")
         if not re.fullmatch(r"[\w.-]+/[\w.-]+", log["repo"]):
             raise ConfigError(f"catch_logs[{i}].repo must be owner/name")
+        if owner is not None and log["repo"].split("/")[0] != owner:
+            raise ConfigError(f"catch_logs[{i}].repo must be in {owner}")
     return logs
 
 
-def settings(config: dict) -> dict:
-    """config.yaml's `digest` block, with its defaults; a malformed block stops the run."""
+def settings(config, owner: str | None = None) -> dict:
+    """config.yaml's `digest` block, with its defaults, and the other keys the digest reads; anything malformed stops
+    the run. With `owner`, every repository named must be in that organization."""
+    if not isinstance(config, dict):
+        raise ConfigError("config.yaml must be a mapping")
+    for key in ("airlock", "agent_markers", "required_checks"):
+        if not isinstance(config.get(key) or {}, dict):
+            raise ConfigError(f"{key} must be a mapping")
+    _strings((config.get("agent_markers") or {}).get("branch_prefixes"), "agent_markers.branch_prefixes")
+    for repo, checks in (config.get("required_checks") or {}).items():
+        _strings(checks, f"required_checks.{repo}")
     block = config.get("digest") or {}
     if not isinstance(block, dict):
         raise ConfigError("digest must be a mapping")
@@ -118,7 +130,7 @@ def settings(config: dict) -> dict:
         raise ConfigError(f"digest has unknown keys: {', '.join(sorted(unknown))}")
     return {"skip_repos": set(_strings(block.get("skip_repos"), "digest.skip_repos")),
             "router_logins": _strings(block.get("router_logins"), "digest.router_logins"),
-            "catch_logs": catch_logs(config)}
+            "catch_logs": catch_logs(config, owner)}
 
 
 def router_logins(config: dict, cfg: dict) -> frozenset[str]:
@@ -200,7 +212,13 @@ def catch_lines(text: str, marker: str, monday: datetime, label: str) -> list[st
     word = re.compile(rf"\b{re.escape(marker)}\b")
     for line in text.splitlines():
         m = re.match(r"^\s*[-*]\s*(\d{4}-\d{2}-\d{2})\b(.*)", line)
-        if m and ts(m.group(1) + "T00:00:00Z") >= monday and word.search(m.group(2)):
+        if not m:
+            continue
+        try:
+            when = ts(m.group(1) + "T00:00:00Z")
+        except ValueError:  # a date that isn't one (2026-13-40) is no catch, and doesn't stop the digest
+            continue
+        if when >= monday and word.search(m.group(2)):
             out.append(f"{label} {m.group(1)}:{m.group(2).strip()[:140]}")
     return out
 
@@ -303,17 +321,21 @@ def main(argv: list[str] | None = None) -> int:
     if not (root / "config.yaml").is_file() or not (root / "repos").is_dir():
         print(f"digest: {root} is not a policy repo checkout (config.yaml and repos/)", file=sys.stderr)
         return 2
-    config = yaml.safe_load((root / "config.yaml").read_text()) or {}
+    config = yaml.safe_load((root / "config.yaml").read_text())
     try:
-        cfg = settings(config)
+        cfg = settings({} if config is None else config, a.owner)
     except ConfigError as e:
         print(f"digest: config.yaml: {e}", file=sys.stderr)
+        return 2
+    config = config or {}
+    repos = a.repos.split(",") if a.repos else policy_repos(root, a.owner, cfg["skip_repos"])
+    if not all(re.fullmatch(r"[\w.-]+/[\w.-]+", r) and r.split("/")[0] == a.owner for r in repos):
+        print(f"digest: --repos must be owner/name repositories in {a.owner}", file=sys.stderr)
         return 2
     today = date.fromisoformat(a.week_of) if a.week_of else datetime.now(timezone.utc).date()
     monday_d = today - timedelta(days=today.weekday())
     monday = datetime(monday_d.year, monday_d.month, monday_d.day, tzinfo=timezone.utc)
-    markers = config.get("agent_markers", {})
-    repos = a.repos.split(",") if a.repos else policy_repos(root, a.owner, cfg["skip_repos"])
+    markers = config.get("agent_markers") or {}
     d = gather(repos, monday, markers, policy_repo=a.policy_repo, watched=set(review_required_repos(config, root / "repos", a.owner)),
                logins=router_logins(config, cfg), skip_roles=workflow_roles(root / "roles"), logs=cfg["catch_logs"])
     body = render(d, monday_d, today)
@@ -321,7 +343,11 @@ def main(argv: list[str] | None = None) -> int:
     if a.dry_run:
         print(title + "\n\n" + body)
         return 0
-    existing = [i for i in (gh(f"repos/{a.policy_repo}/issues", state="open", labels="digest", per_page=20) or []) if i["title"] == title]
+    found = gh(f"repos/{a.policy_repo}/issues", state="open", labels="digest", per_page=20)
+    if found is None:  # an unreadable lookup would open a second digest for the week: write nothing
+        print(f"digest: {a.policy_repo}'s open digest issues are unreadable; the digest is not written", file=sys.stderr)
+        return 1
+    existing = [i for i in found if i["title"] == title]
     if existing:
         subprocess.run(["gh", "api", "-X", "PATCH", f"repos/{a.policy_repo}/issues/{existing[0]['number']}", "--input", "-"], input=json.dumps({"body": body}), check=True, capture_output=True, text=True)
         print(existing[0]["html_url"])
