@@ -57,7 +57,11 @@ def check(d: str, *extra, status=200):
     return r, [l for l in r.stdout.splitlines() if l.startswith("::error")]
 
 
-BASE = {"repos/api.yaml": REPO, "roles/triage/role.yaml": GOOD, "roles/triage/BRIEF.md": "x", "roles/scribe/BRIEF.md": "x"}
+# The cases below were written when one long list of floors was every tenant's; that list is now a tenant's own
+# config.yaml (the gate's fixture), so BASE carries it and they answer as before.
+LONG_CONFIG = (ROOT / "test" / "gate" / "fixtures" / "config.yaml").read_text()
+BASE = {"config.yaml": LONG_CONFIG, "repos/api.yaml": REPO, "roles/triage/role.yaml": GOOD, "roles/triage/BRIEF.md": "x",
+        "roles/scribe/BRIEF.md": "x"}
 
 r, errors = check(repo(BASE))
 assert r.returncode == 0 and errors == [] and "OK: 0 problem(s)" in r.stdout, r.stdout + r.stderr
@@ -108,5 +112,56 @@ print("ok  with --base, a loosened level or a removed carve-out is a problem")
 r, errors = check(repo({**BASE, "roles/scribe/role.yaml": BAD.replace("scribe\nlevel", "scribe\n,evil: x\nlevel")}))
 assert all("\n" not in e for e in errors)
 print("ok  every annotation is one line")
+
+# Floors are config.yaml's, read by the gate's own code. Without them, the small default: delete_data L1 and
+# change_policy L2 for actions, `secrets` L1 for paths; nothing else.
+no_floors = {k: v for k, v in BASE.items() if k != "config.yaml"}
+r, errors = check(repo({**no_floors, "repos/api.yaml": REPO.replace("send: L2", "send: L4") + "  - glob: src/email/**\n    level: L3\n"}))
+assert r.returncode == 0 and errors == [], ("without floors, send and an email path are the policy's to set", errors)
+r, errors = check(repo({**no_floors, "repos/api.yaml": REPO.replace("send: L2", "delete_data: L2\n  change_policy: L3") +
+                        "  - glob: config/secrets/**\n    level: L3\n"}))
+msgs = "\n".join(errors)
+assert "actions.delete_data is L2; the charter's floor is L1" in msgs and "actions.change_policy is L3; the charter's floor is L2" in msgs, msgs
+assert "path config/secrets/** is L3; the floor for 'secrets' is L1" in msgs and len(errors) == 3, msgs
+print("ok  without floors in config.yaml, the default's alone: delete_data, change_policy and secrets")
+
+tenant = "human_owner: '@acme-lead'\nfloors:\n  actions:\n    deploy: L1\n  paths:\n    firmware: L1\n"
+r, errors = check(repo({**no_floors, "config.yaml": tenant, "repos/api.yaml": REPO.replace("send: L2", "deploy: L2") +
+                        "  - glob: src/Firmware/**\n    level: L2\n"}))
+msgs = "\n".join(errors)
+assert "actions.deploy is L2; the charter's floor is L1" in msgs and "path src/Firmware/** is L2; the floor for 'firmware' is L1" in msgs, msgs
+assert len(errors) == 2, msgs
+r, errors = check(repo({**no_floors, "config.yaml": tenant, "repos/api.yaml": REPO.replace("send: L2", "delete_data: L2")}))
+assert len(errors) == 1 and "actions.delete_data is L2; the charter's floor is L1" in errors[0], ("a tenant's floors keep the default's", errors)
+print("ok  a tenant's own floors bind its repository files, on top of the default")
+
+bad = ("human_owner: '@acme-lead'\nfloors:\n  actions:\n    delete_data: L2\n    change_policy: L3\n    send: L5\n"
+       "  paths:\n    secrets: L2\n    k8s-Secrets: L3\n    dns: L1\n    true: L1\n  path:\n    x: L1\n")
+r, errors = check(repo({**no_floors, "config.yaml": bad}))
+msgs = "\n".join(errors)
+assert r.returncode == 1, msgs
+want = [
+    "file=config.yaml,line=4::floors.actions.delete_data is L2, looser than the default floor (L1)",
+    "file=config.yaml,line=5::floors.actions.change_policy is L3, looser than the default floor (L2)",
+    "file=config.yaml,line=6::floors.actions.send is 'L5'; a floor is a level from L1 to L4",
+    "file=config.yaml,line=8::floors.paths.secrets is L2, looser than the default floor for 'secrets' (L1)",
+    "file=config.yaml,line=9::floors.paths.k8s-Secrets is L3, looser than the default floor for 'secrets' (L1)",
+    "floors.paths has a key that isn't a word (True); quote it",
+    "file=config.yaml,line=12::floors.path isn't a kind of floor; floors takes actions and paths",
+]
+for w in want:
+    assert w in msgs, (w, msgs)
+assert len(errors) == len(want) and "dns" not in msgs, msgs
+r, errors = check(repo({**no_floors, "config.yaml": "human_owner: x\nfloors: [secrets]\n"}))
+assert len(errors) == 1 and "file=config.yaml,line=2::floors must be a mapping" in errors[0], errors
+r, errors = check(repo({**no_floors, "config.yaml": "human_owner: x\nfloors:\n  paths: [secrets]\n"}))
+assert len(errors) == 1 and "floors.paths must be a mapping of words to levels" in errors[0], errors
+r, errors = check(repo({**no_floors, "config.yaml": "floors: {paths: {a: L1}\n"}))
+assert len(errors) == 1 and "file=config.yaml" in errors[0] and "not YAML" in errors[0], errors
+print("ok  a floor looser than the default, one that isn't L1 to L4, a key that isn't a word or a kind there isn't all fail")
+
+src = (ROOT / "validate" / "check.py").read_text()
+assert "from gate import DEFAULT_FLOORS" in src and "_FLOORS = {" not in src, "validate reads the gate's floors, never its own copy"
+print("ok  validate and the gate read floors with the same code")
 
 print("OK: 0 failing case(s)")

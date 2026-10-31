@@ -4,11 +4,12 @@
 The job proves itself with its GitHub OIDC token, and Airlock answers a token that can read the tenant's policy repo
 and nothing else, for this repository's own `.github/workflows/autonomy-gate.yml` only. With it this reads, from the
 policy repo's default branch:
-  config.yaml                the owner, the agent markers and Airlock's App login
+  config.yaml                the owner, the agent markers, Airlock's App login and the tenant's floors
   repos/<this repo>.yaml     this repository's policy there, the stricter of it and AUTONOMY.yaml scores the PR
   roles/*/role.yaml          every role's bot login, so a PR any role opens is an agent's
 then hands the token back. It writes the gate's config (config.yaml with every role's login under
-agent_markers.logins, and Airlock's App login once any role is on Airlock) and this repository's policy file.
+agent_markers.logins, and Airlock's App login once any role is on Airlock; `floors` passes through as written) and
+this repository's policy file. A `floors` the gate can't read fails here, before anything is scored.
 
   policy.py --airlock <origin> --repo-name <name> --config-out <file> --policy-out <file>
     Exit 0: both written (no policy-out when the policy repo has no file for this repository).
@@ -30,6 +31,10 @@ import urllib.parse
 import urllib.request
 
 import yaml
+
+# The gate's own reading of config.yaml's floors, from this action's directory (never the checkout's).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from gate import FloorError, floors_of  # noqa: E402
 
 TOKEN = re.compile(r"[A-Za-z0-9_.~+/=-]{20,4096}")
 REPO = re.compile(r"[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}")
@@ -146,6 +151,10 @@ def read_policy(token: str, repo: str, name: str) -> tuple[dict, list[dict], str
     config = yaml.safe_load(text or "") or {}
     if not isinstance(config, dict) or not config.get("human_owner"):
         raise Stop(f"{repo} has no config.yaml naming a human_owner")
+    try:
+        floors_of(config)
+    except FloorError as e:
+        raise Stop(f"{repo}'s config.yaml: {e}") from None
     default = github(token, f"repos/{repo}")["default_branch"]
     tree = github(token, f"repos/{repo}/git/trees/{urllib.parse.quote(default, safe='')}?recursive=1")
     paths = sorted(e["path"] for e in tree.get("tree", []) if e.get("type") == "blob" and ROLE_FILE.fullmatch(e.get("path", "")))

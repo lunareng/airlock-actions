@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Check a policy repo: every repos/*.yaml (and AUTONOMY.yaml) and roles/*/role.yaml, against the schemas Airlock
-publishes (fetched at run time, never copied) and the charter's rules every tenant shares.
+publishes (fetched at run time, never copied) and the charter's rules every tenant shares, with the floors config.yaml
+sets (`floors:`, read by the gate's own code, so the two can't disagree).
 
   check.py --airlock <origin> --owner <org> [--base <git ref>]
     Run in the policy repo's checkout. Each problem is one `::error file=<path>,line=<n>::<message>`; the exit code is 1
@@ -8,7 +9,9 @@ publishes (fetched at run time, never copied) and the charter's rules every tena
     a carve-out removed, is a problem too (it waits for the human owner).
 
 What it checks, beyond the schema:
-  repos/<name>.yaml  its `repo` is <owner>/<name>; no action or path above its charter floor; no carve-out looser than
+  config.yaml        its `floors` (optional): actions and paths only, each a level from L1 to L4, and none looser than
+                     the default every tenant has (the gate's DEFAULT_FLOORS): floors only add to it or tighten it.
+  repos/<name>.yaml  its `repo` is <owner>/<name>; no action or path above its floor; no carve-out looser than
                      the default; policy.loosen is review; an L4 default has a judge with a check.
   roles/<r>/role.yaml  `role` is <r>; every repository it writes to has a repos/ file; every repository it clones or
                      judges by is the owner's; its brief and goals exist; an L4 role's judge runs in CI, with a check.
@@ -27,11 +30,10 @@ from pathlib import Path
 import yaml
 from jsonschema import Draft202012Validator
 
-RANK = {"L1": 1, "L2": 2, "L3": 3, "L4": 4}
-# The charter's permanent floors: the strictest level an action, or a path naming one of these words, may be anywhere.
-ACTION_FLOORS = {"touch_ehi": "L1", "delete_data": "L1", "send": "L2", "spend": "L2", "change_policy": "L2"}
-PATH_FLOORS = {"secrets": "L1", "dns": "L1", "backup": "L1", "argocd": "L1", "ehi": "L1", "consent": "L2",
-               "suppression": "L2", "payments": "L2", "publish": "L2", "email": "L2", "sms": "L2"}
+# The floors are the gate's: the same default and the same reading of config.yaml's `floors`. This is the action's own
+# directory, never the checkout's, so nothing in the policy repo can stand in for it.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gate"))
+from gate import DEFAULT_FLOORS, FLOOR_KINDS, RANK, FloorError, floors_of  # noqa: E402
 
 
 class Problems:
@@ -107,11 +109,51 @@ def schema_problems(doc: dict, schema: dict, rel: str, index, problems: Problems
         problems.add(rel, line_of(index, err.absolute_path), f"{where + ': ' if where else ''}{err.message}")
 
 
-def check_repo(doc: dict, rel: str, name: str | None, owner: str, index, problems: Problems) -> None:
+def check_floors(doc: dict, rel: str, index, problems: Problems) -> dict[str, dict[str, str]]:
+    """config.yaml's `floors`, every problem with it, and the floors as the gate will hold them (the default's alone
+    when they can't be read: validate fails then anyway)."""
+    floors = doc.get("floors")
+    if floors is None:
+        return floors_of({})
+    if not isinstance(floors, dict):
+        problems.add(rel, line_of(index, ["floors"]), "floors must be a mapping, with actions: and paths:")
+        return floors_of({})
+    for kind, given in floors.items():
+        if kind not in FLOOR_KINDS:
+            problems.add(rel, line_of(index, ["floors", kind]), f"floors.{kind} isn't a kind of floor; floors takes {' and '.join(FLOOR_KINDS)}")
+            continue
+        if given is None:
+            continue
+        if not isinstance(given, dict):
+            problems.add(rel, line_of(index, ["floors", kind]), f"floors.{kind} must be a mapping of {'words' if kind == 'paths' else 'actions'} to levels")
+            continue
+        for key, level in given.items():
+            where = line_of(index, ["floors", kind, key])
+            if not isinstance(key, str) or not key.strip():
+                problems.add(rel, where, f"floors.{kind} has a key that isn't a word ({key!r}); quote it")
+                continue
+            if level not in RANK:
+                problems.add(rel, where, f"floors.{kind}.{key} is {level!r}; a floor is a level from L1 to L4")
+                continue
+            for word, floor in DEFAULT_FLOORS[kind].items():
+                covers = word in key.lower() if kind == "paths" else word == key
+                if covers and RANK[level] > RANK[floor]:
+                    what = f"the default floor for '{word}'" if kind == "paths" else "the default floor"
+                    problems.add(rel, where, f"floors.{kind}.{key} is {level}, looser than {what} ({floor}); "
+                                             "a tenant's floors only add to the default or tighten it")
+    try:
+        return floors_of(doc)
+    except FloorError:
+        return floors_of({})
+
+
+def check_repo(doc: dict, rel: str, name: str | None, owner: str, index, problems: Problems,
+               floors: dict[str, dict[str, str]] | None = None) -> None:
+    floors = floors or floors_of({})
     if name is not None and doc.get("repo") != f"{owner}/{name}":
         problems.add(rel, line_of(index, ["repo"]), f"repo must be {owner}/{name}, the repository this file is for")
     default = doc.get("default", "L1")
-    for action, floor in ACTION_FLOORS.items():
+    for action, floor in floors["actions"].items():
         lvl = (doc.get("actions") or {}).get(action)
         if lvl in RANK and RANK[lvl] > RANK[floor]:
             problems.add(rel, line_of(index, ["actions", action]), f"actions.{action} is {lvl}; the charter's floor is {floor}")
@@ -120,7 +162,7 @@ def check_repo(doc: dict, rel: str, name: str | None, owner: str, index, problem
             continue
         if default in RANK and RANK[p["level"]] > RANK[default]:
             problems.add(rel, line_of(index, ["paths", i, "level"]), f"path {p.get('glob')} is {p['level']}, looser than the default {default}")
-        for key, floor in PATH_FLOORS.items():
+        for key, floor in floors["paths"].items():
             if key in str(p.get("glob", "")).lower() and RANK[p["level"]] > RANK[floor]:
                 problems.add(rel, line_of(index, ["paths", i, "level"]), f"path {p.get('glob')} is {p['level']}; the floor for '{key}' is {floor}")
     if (doc.get("policy") or {}).get("loosen", "review") != "review":
@@ -192,6 +234,11 @@ def main() -> int:
     root = Path.cwd()
     repo_schema, role_schema = fetch_schema(airlock, "autonomy.schema.json"), fetch_schema(airlock, "role.schema.json")
     problems = Problems()
+    floors = floors_of({})
+    if (root / "config.yaml").is_file():
+        doc, index = load(root / "config.yaml", "config.yaml", problems)
+        if doc is not None:
+            floors = check_floors(doc, "config.yaml", index, problems)
     repo_files = sorted(root.glob("repos/*.yaml"))
     known = {f"{a.owner}/{p.stem}" for p in repo_files}
     for path in repo_files + ([root / "AUTONOMY.yaml"] if (root / "AUTONOMY.yaml").is_file() else []):
@@ -200,7 +247,7 @@ def main() -> int:
         if doc is None:
             continue
         schema_problems(doc, repo_schema, rel, index, problems)
-        check_repo(doc, rel, path.stem if rel.startswith("repos/") else None, a.owner, index, problems)
+        check_repo(doc, rel, path.stem if rel.startswith("repos/") else None, a.owner, index, problems, floors)
         if a.base:
             check_loosening(rel, doc, a.base, root, index, problems)
     for path in sorted(root.glob("roles/*/role.yaml")):

@@ -91,6 +91,35 @@ jobs:
 | --- | --- |
 | `level` | The PR's level, `L1` to `L4`. |
 | `passed` | `true` or `false` once the level is computed; empty if the gate stopped before. |
+## Floors
+
+A floor is the loosest level something may ever be, whatever a repository's policy says. The gate and validate both read yours from `floors:` in your policy repo's `config.yaml`:
+
+```yaml
+floors:
+  actions:            # an action's level in repos/*.yaml (validate)
+    delete_data: L1
+    change_policy: L2
+    send: L2
+  paths:              # a path containing the word, in any case, anywhere in it (the gate and validate)
+    secrets: L1
+    payments: L2
+```
+
+- **A path floor is a word, matched as a substring of the whole path, lowercased.** `payments: L2` holds `src/Payments/charge.ts` and `docs/prepayments.md` at L2 or stricter. A word catches more than you might mean, so choose words that only name what you mean to hold.
+- **The gate holds paths;** validate holds both kinds: no `actions.<name>` and no carve-out whose glob contains a word may be looser than its floor.
+- **Without `floors`, every tenant has the same small default:**
+
+  | Floor | Level | Why it holds for everyone |
+  | --- | --- | --- |
+  | a path containing `secrets` | L1 | A secret that leaks can't be taken back, in any organization. The word means one thing, so it holds almost nothing you didn't mean. |
+  | `actions.delete_data` | L1 | Deleting data can't be undone. |
+  | `actions.change_policy` | L2 | An agent loosening its own policy is the one change the policy can't judge, so a person approves it. |
+
+  It is small on purpose: a longer list of words floors paths nobody meant (`ehi` is in `src/vehicle.ts`, `sms` in `src/prisms.ts`), and what is sensitive is each organization's to say. Add your own words and actions for what you hold close: payments, customer records, sending, infrastructure.
+- **Yours only add to the default or tighten it.** For every key the gate and validate take the stricter of yours and the default's, so `secrets` stays L1 whatever you write. Validate fails a floor written looser than the default (`secrets: L2`, `delete_data: L3`, or `k8s-secrets: L3`, which names `secrets`), a level that isn't `L1` to `L4`, and any key under `floors` other than `actions` and `paths`.
+- **The gate fails closed** on floors it can't read: the PR gets no level, and the error says which key.
+
 ## The role workflow
 
 `lunareng/airlock-actions/.github/workflows/role.yml` is one whole role run, so a role's workflow in your policy repo is only its triggers and this call. It reads `roles/<role>/role.yaml` at the run's commit:
@@ -137,7 +166,8 @@ The file must be `.github/workflows/role-<role>.yml` on your policy repo's defau
 `lunareng/airlock-actions/validate` checks your policy repo on its pull requests. It covers every `repos/*.yaml`, `AUTONOMY.yaml` and `roles/*/role.yaml`, against two things:
 - **the schemas Airlock publishes,** fetched at run time, so your repo keeps no copy;
 - **the rules every tenant shares:**
-  - no action or path above the charter's floors;
+  - your `config.yaml` floors read cleanly, and none is looser than the default ([Floors](#floors));
+  - no action or path above its floor;
   - carve-outs only tighten;
   - each repository file names its own repository;
   - a role's repositories are your organization's, and the ones it writes to have a policy file;
@@ -217,7 +247,8 @@ jobs:
 `lunareng/airlock-actions/validate` checks your policy repo on its pull requests. It covers every `repos/*.yaml`, `AUTONOMY.yaml` and `roles/*/role.yaml`, against two things:
 - **the schemas Airlock publishes,** fetched at run time, so your repo keeps no copy;
 - **the rules every tenant shares:**
-  - no action or path above the charter's floors;
+  - your `config.yaml` floors read cleanly, and none is looser than the default ([Floors](#floors));
+  - no action or path above its floor;
   - carve-outs only tighten;
   - each repository file names its own repository;
   - a role's repositories are your organization's, and the ones it writes to have a policy file;

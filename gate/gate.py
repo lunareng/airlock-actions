@@ -4,7 +4,8 @@
 Library:
   effective_level(policy, changed_paths) -> (level, reasons)
     The level is the strictest of the policy default and every carve-out whose glob matches a changed
-    path. Floors from the charter apply on top. Reasons name each path and the rule that set its level.
+    path. The tenant's floors apply on top: `floors` is config.yaml's `floors.paths`, held over DEFAULT_FLOORS
+    (floor_table). Reasons name each path and the rule that set its level.
 
 CLI (run inside the repo under test, on the PR head):
   gate.py --base <ref> [--policy AUTONOMY.yaml] [--main-policy <file>] [--branch <name>] [--author <login>] [--json]
@@ -54,11 +55,55 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 RANK = {"L1": 1, "L2": 2, "L3": 3, "L4": 4}
 
-# Charter floors, mirrored from validate.py: a path matching one of these can never be looser.
-PATH_FLOORS = {
-    "secrets": "L1", "dns": "L1", "backup": "L1", "argocd": "L1", "ehi": "L1",
-    "consent": "L2", "suppression": "L2", "payments": "L2", "publish": "L2", "email": "L2", "sms": "L2",
+# Floors are the tenant's policy: config.yaml's `floors:` in its policy repo, `actions` by name and `paths` by a word a
+# changed path contains (lowercased, anywhere in it). Without one, this small default holds for every tenant, and a
+# tenant's floors only add to it or tighten it: floor_table takes the stricter of the two for every key, so a floor
+# written looser than the default is held at the default (and validate fails it). validate/check.py reads the same.
+DEFAULT_FLOORS = {
+    "actions": {"delete_data": "L1", "change_policy": "L2"},
+    "paths": {"secrets": "L1"},
 }
+FLOOR_KINDS = tuple(DEFAULT_FLOORS)
+
+
+class FloorError(ValueError):
+    """config.yaml's floors can't be read; the gate fails closed rather than score without them."""
+
+
+def floor_table(kind: str, given=None) -> dict[str, str]:
+    """The floors of one kind the gate holds: the tenant's `floors.<kind>` in its order, each the stricter of it and
+    the default, then every default the tenant doesn't name. A path floor's word is lowercased, as the path is."""
+    if given is None:
+        given = {}
+    if not isinstance(given, dict):
+        raise FloorError(f"floors.{kind} is not a mapping of {'words' if kind == 'paths' else 'actions'} to levels")
+    out: dict[str, str] = {}
+    for key, level in given.items():
+        if not isinstance(key, str) or not key.strip():
+            raise FloorError(f"floors.{kind} has a key that isn't a word ({key!r}); quote it")
+        if level not in RANK:
+            raise FloorError(f"floors.{kind}.{key} is {level!r}, not a level from L1 to L4")
+        k = key.lower() if kind == "paths" else key
+        if k not in out or RANK[level] < RANK[out[k]]:
+            out[k] = level
+    for k, level in DEFAULT_FLOORS[kind].items():
+        if k not in out or RANK[level] < RANK[out[k]]:
+            out[k] = level
+    return out
+
+
+def floors_of(config: dict | None) -> dict[str, dict[str, str]]:
+    """config.yaml's floors, every kind, as the gate holds them (floor_table). Raises FloorError for a `floors` that
+    isn't a mapping or names a kind there isn't: a typo there would drop the tenant's floors without a word."""
+    floors = (config or {}).get("floors")
+    if floors is None:
+        floors = {}
+    if not isinstance(floors, dict):
+        raise FloorError("floors is not a mapping (actions: and paths:)")
+    unknown = [repr(k) if not isinstance(k, str) else k for k in floors if k not in FLOOR_KINDS]
+    if unknown:
+        raise FloorError(f"floors has {', '.join(unknown)}; it takes only {' and '.join(FLOOR_KINDS)}")
+    return {kind: floor_table(kind, floors.get(kind)) for kind in FLOOR_KINDS}
 
 
 def _match(glob: str, path: str) -> bool:
@@ -113,7 +158,10 @@ def shown(path: str) -> str:
     return "".join(out)
 
 
-def effective_level(policy: dict, changed_paths: list[str], base_policy: dict | None = None) -> tuple[str, list[str]]:
+def effective_level(policy: dict, changed_paths: list[str], base_policy: dict | None = None,
+                    floors: dict | None = None) -> tuple[str, list[str]]:
+    """`floors` is the tenant's `floors.paths` as config.yaml writes it; None is the default's alone."""
+    path_floors = floor_table("paths", floors)
     level = policy.get("default", "L2")
     reasons = [f"default {level}"]
     for path in changed_paths:
@@ -127,7 +175,7 @@ def effective_level(policy: dict, changed_paths: list[str], base_policy: dict | 
         if hit:
             reasons.append(f"{shown(path)}: {hit['level']} ({hit['glob']})")
         low = path.lower()
-        for key, floor in PATH_FLOORS.items():
+        for key, floor in path_floors.items():
             if key in low and RANK[floor] < RANK[level]:
                 level = floor
                 reasons.append(f"{shown(path)}: floor {floor} ('{key}')")
@@ -141,14 +189,14 @@ def effective_level(policy: dict, changed_paths: list[str], base_policy: dict | 
 
 
 def with_main_policy(level: str, reasons: list[str], main_policy: dict | None, changed_paths: list[str],
-                     policy_file: str = "AUTONOMY.yaml") -> tuple[str, list[str]]:
+                     policy_file: str = "AUTONOMY.yaml", floors: dict | None = None) -> tuple[str, list[str]]:
     """The stricter of the PR's AUTONOMY.yaml and the repo's file on lunareng/autonomy's main. Main is the source
     of truth and AUTONOMY.yaml its copy, which lags a policy change until it is rolled out, so a tightening on main
     reaches an open PR as soon as its gate runs again (autonomy#160), and the copy can never score a PR looser.
     The PR's own edit to AUTONOMY.yaml is judged once, by effective_level against the base's copy."""
     if main_policy is None:
         return level, [*reasons, "lunareng/autonomy main has no policy file for this repo: AUTONOMY.yaml alone scores it"]
-    main_level, main_reasons = effective_level(main_policy, [p for p in changed_paths if p != policy_file])
+    main_level, main_reasons = effective_level(main_policy, [p for p in changed_paths if p != policy_file], floors=floors)
     if RANK[main_level] < RANK[level]:
         return main_level, [*reasons, f"lunareng/autonomy main scores this diff {main_level}, stricter than AUTONOMY.yaml's {level}:",
                             *(f"main: {r}" for r in main_reasons)]
@@ -342,6 +390,12 @@ def main() -> int:
 
     policy = yaml.safe_load(Path(a.policy).read_text())
     config = yaml.safe_load(Path(a.config).read_text()) or {}
+    try:
+        floors_of(config)
+    except FloorError as e:
+        print(f"::error title=autonomy gate::config.yaml {shown(str(e))}; no floors, no gate")
+        return 1
+    path_floors = (config.get("floors") or {}).get("paths")
     markers = config.get("agent_markers", {})
     stamp = None
     if a.stamp_file and Path(a.stamp_file).exists():
@@ -362,10 +416,11 @@ def main() -> int:
             base_policy = yaml.safe_load(subprocess.check_output(["git", "show", f"{a.base}:{a.policy}"], text=True, stderr=subprocess.DEVNULL))
         except subprocess.CalledProcessError:
             base_policy = None
-    level, reasons = effective_level(policy, paths, base_policy)
+    level, reasons = effective_level(policy, paths, base_policy, floors=path_floors)
     if a.main_policy:
         main_file = Path(a.main_policy)
-        level, reasons = with_main_policy(level, reasons, yaml.safe_load(main_file.read_text()) if main_file.is_file() else None, paths, a.policy)
+        level, reasons = with_main_policy(level, reasons, yaml.safe_load(main_file.read_text()) if main_file.is_file() else None, paths, a.policy,
+                                          floors=path_floors)
     level_reasons = len(reasons)
     agent = is_agent(a.branch, a.author, markers)
     credited, credit = airlock_credit(a.author, config.get("airlock", {}), stamp)

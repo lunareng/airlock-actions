@@ -16,6 +16,9 @@ api = yaml.safe_load((FIXTURES / "api.yaml").read_text())
 cli = yaml.safe_load((FIXTURES / "lunar-cli.yaml").read_text())
 infra = yaml.safe_load((FIXTURES / "infra.yaml").read_text())
 salon = yaml.safe_load((FIXTURES / "lunar-salon.yaml").read_text())
+# Floors are the tenant's (config.yaml `floors:`). These cases were written when one long list was the gate's for every
+# tenant; fixtures/config.yaml carries that list as a tenant's own, and every case below scores with it, as before.
+LONG = yaml.safe_load((FIXTURES / "config.yaml").read_text())["floors"]["paths"]
 
 cases = [
     # (policy, changed paths, expected level, note)
@@ -37,7 +40,7 @@ cases = [
 
 failed = 0
 for policy, paths, want, note in cases:
-    got, reasons = effective_level(policy, paths)
+    got, reasons = effective_level(policy, paths, floors=LONG)
     ok = got == want
     failed += not ok
     print(f"{'ok ' if ok else 'BAD'} {note}: {paths} -> {got}" + ("" if ok else f" (wanted {want}); {reasons}"))
@@ -65,17 +68,17 @@ for glob, path, want in [
 capcom = yaml.safe_load((FIXTURES / "lunar-capcom.yaml").read_text())
 houston = yaml.safe_load((FIXTURES / "lunar-houston.yaml").read_text())
 for name, policy in (("lunar-capcom", capcom), ("lunar-houston", houston)):
-    got, reasons = effective_level(policy, ["src/lib/send/broadcast.ts"])
+    got, reasons = effective_level(policy, ["src/lib/send/broadcast.ts"], floors=LONG)
     ok = got == "L2" and any("src/**/send/**" in r for r in reasons)
     failed += not ok
     print(f"{'ok ' if ok else 'BAD'} {name}: src/lib/send/broadcast.ts is L2 by src/**/send/** -> {got}" + ("" if ok else f"; {reasons}"))
 
 tighter = {**cli, "default": "L3"}
-got, _ = effective_level(tighter, ["AUTONOMY.yaml"], base_policy=cli)
+got, _ = effective_level(tighter, ["AUTONOMY.yaml"], base_policy=cli, floors=LONG)
 assert got == "L3", f"a tightening-only policy edit computes from the new default, got {got}"
-got, _ = effective_level(cli, ["AUTONOMY.yaml"], base_policy=tighter)
+got, _ = effective_level(cli, ["AUTONOMY.yaml"], base_policy=tighter, floors=LONG)
 assert got == "L2", f"a loosening policy edit is L2, got {got}"
-got, _ = effective_level({**api, "paths": api["paths"][1:]}, ["AUTONOMY.yaml"], base_policy=api)
+got, _ = effective_level({**api, "paths": api["paths"][1:]}, ["AUTONOMY.yaml"], base_policy=api, floors=LONG)
 assert got == "L2", f"removing a carve-out is a loosening, got {got}"
 print("ok  policy edits: tightening computes, loosening is L2")
 
@@ -269,21 +272,21 @@ print("ok  the gate action re-runs before its verdict and keeps it")
 from gate import with_main_policy  # noqa: E402
 copy = {"default": "L3", "paths": [{"glob": "src/**", "level": "L3"}]}
 main_tight = {"default": "L3", "paths": [{"glob": "src/**", "level": "L2"}]}
-lvl, why = with_main_policy(*effective_level(copy, ["src/a.ts"]), main_tight, ["src/a.ts"])
+lvl, why = with_main_policy(*effective_level(copy, ["src/a.ts"], floors=LONG), main_tight, ["src/a.ts"], floors=LONG)
 assert lvl == "L2" and any("stricter than AUTONOMY.yaml's L3" in r for r in why) and "main: src/a.ts: L2 (src/**)" in why, why
-lvl, why = with_main_policy(*effective_level(main_tight, ["src/a.ts"]), copy, ["src/a.ts"])
+lvl, why = with_main_policy(*effective_level(main_tight, ["src/a.ts"], floors=LONG), copy, ["src/a.ts"], floors=LONG)
 assert lvl == "L2", "a copy stricter than main keeps its level: main never loosens a PR"
-lvl, why = with_main_policy(*effective_level(copy, ["docs/a.md"]), main_tight, ["docs/a.md"])
+lvl, why = with_main_policy(*effective_level(copy, ["docs/a.md"], floors=LONG), main_tight, ["docs/a.md"], floors=LONG)
 assert lvl == "L3" and not any(r.startswith("main:") for r in why), "a path main didn't tighten scores as before"
-lvl, why = with_main_policy(*effective_level(copy, ["src/a.ts"]), None, ["src/a.ts"])
+lvl, why = with_main_policy(*effective_level(copy, ["src/a.ts"], floors=LONG), None, ["src/a.ts"], floors=LONG)
 assert lvl == "L3" and "AUTONOMY.yaml alone scores it" in why[-1], "no file on main: the copy alone, said so"
 looser_main = {"default": "L4", "paths": []}
-lvl, _ = with_main_policy(*effective_level(looser_main, ["AUTONOMY.yaml"], base_policy=copy), looser_main, ["AUTONOMY.yaml"])
+lvl, _ = with_main_policy(*effective_level(looser_main, ["AUTONOMY.yaml"], base_policy=copy, floors=LONG), looser_main, ["AUTONOMY.yaml"], floors=LONG)
 assert lvl == "L2", "a PR loosening AUTONOMY.yaml is still L2 against the base's copy, even with main already looser"
 tightened = {"default": "L2", "paths": copy["paths"]}
-lvl, _ = with_main_policy(*effective_level(tightened, ["AUTONOMY.yaml"], base_policy=copy), tightened, ["AUTONOMY.yaml"])
+lvl, _ = with_main_policy(*effective_level(tightened, ["AUTONOMY.yaml"], base_policy=copy, floors=LONG), tightened, ["AUTONOMY.yaml"], floors=LONG)
 assert lvl == "L2", "rolling a tightening out to the copy computes from the new level, not a forced L2 from main"
-lvl, _ = with_main_policy(*effective_level({**tightened, "default": "L3"}, ["AUTONOMY.yaml"], base_policy=copy), copy, ["AUTONOMY.yaml"])
+lvl, _ = with_main_policy(*effective_level({**tightened, "default": "L3"}, ["AUTONOMY.yaml"], base_policy=copy, floors=LONG), copy, ["AUTONOMY.yaml"], floors=LONG)
 assert lvl == "L3", "a tightening-only copy edit merges at the level the rest of the diff computes, as decided 2026-10-20"
 print("ok  the stricter of AUTONOMY.yaml and lunareng/autonomy main")
 
@@ -413,6 +416,84 @@ with tempfile.TemporaryDirectory() as d:
     assert out["level"] == "L2" and any("may merge/**" in x for x in out["reasons"]), out
     assert all("\n" not in x for x in out["reasons"]), out
 print("ok  a glob in the PR's policy adds no line to the reasons")
+
+# Floors are the tenant's policy (config.yaml `floors:`), over a small default every tenant has: `secrets` in a path is
+# L1, and nothing else is floored. A tenant's floors add to it or tighten it, never loosen it.
+from gate import DEFAULT_FLOORS, FloorError, floor_table, floors_of  # noqa: E402
+assert DEFAULT_FLOORS == {"actions": {"delete_data": "L1", "change_policy": "L2"}, "paths": {"secrets": "L1"}}, DEFAULT_FLOORS
+plain = {"default": "L3", "paths": [{"glob": "src/**", "level": "L3"}]}
+got, why = effective_level(plain, ["src/vehicle.ts"])
+assert (got, why) == ("L3", ["default L3", "src/vehicle.ts: L3 (src/**)"]), ("no floors: src/vehicle.ts scores by its glob", got, why)
+got, why = effective_level(plain, ["src/vehicle.ts"], floors=LONG)
+assert got == "L1" and "src/vehicle.ts: floor L1 ('ehi')" in why, ("the long list holds it at L1 by 'ehi', as before", why)
+got, why = effective_level(plain, ["config/Secrets.yaml"])
+assert got == "L1" and why[-1] == "config/Secrets.yaml: floor L1 ('secrets')", ("the default holds secrets at L1", why)
+for path in ("templates/email/welcome.html", "infra/dns.tf", "src/payments/charge.ts"):
+    got, _ = effective_level(plain, [path])
+    assert got == "L3", (f"no floors: {path} is at its glob's level", got)
+print("ok  without floors, only the default's 'secrets' floors a path: src/vehicle.ts scores by its glob")
+
+tenant = {"firmware": "L1", "Billing": "L2"}
+got, why = effective_level(plain, ["src/firmware/boot.c"], floors=tenant)
+assert got == "L1" and why[-1] == "src/firmware/boot.c: floor L1 ('firmware')", why
+got, why = effective_level(plain, ["src/BILLING/invoice.ts"], floors=tenant)
+assert got == "L2" and why[-1] == "src/BILLING/invoice.ts: floor L2 ('billing')", ("a floor's word matches in any case", why)
+got, _ = effective_level(plain, ["secrets/key.txt"], floors=tenant)
+assert got == "L1", "a tenant's floors keep the default's"
+got, why = effective_level(plain, ["secrets/key.txt"], floors={"secrets": "L3"})
+assert got == "L1" and why[-1] == "secrets/key.txt: floor L1 ('secrets')", ("a floor written looser than the default is held at it", why)
+got, _ = effective_level(plain, ["src/vehicle.ts"], floors=tenant)
+assert got == "L3", "a tenant's own floors, and only those words"
+assert list(floor_table("paths", LONG)) == list(LONG), "the tenant's order is the reasons' order"
+assert floor_table("paths", {"firmware": "L1"}) == {"firmware": "L1", "secrets": "L1"}
+assert floor_table("actions", {"send": "L2", "delete_data": "L3"}) == {"send": "L2", "delete_data": "L1", "change_policy": "L2"}
+print("ok  a tenant's floors add words and tighten; one written looser than the default is held at the default")
+
+for bad, says in (({"paths": {"ehi": "L5"}}, "floors.paths.ehi is 'L5', not a level"), ({"paths": {True: "L1"}}, "isn't a word"),
+                  ({"paths": ["ehi"]}, "floors.paths is not a mapping"), ({"path": {"ehi": "L1"}}, "floors has path"),
+                  ("ehi: L1", "floors is not a mapping"), ({"actions": {"send": None}}, "floors.actions.send is None"),
+                  ({"paths": {"": "L1"}}, "isn't a word")):
+    try:
+        floors_of({"floors": bad})
+        raise AssertionError(f"floors {bad!r} should not read")
+    except FloorError as e:
+        assert says in str(e), (bad, str(e))
+assert floors_of({}) == floors_of({"floors": None}) == floors_of({"floors": {"paths": None}}) == DEFAULT_FLOORS
+print("ok  floors the gate can't read raise, and a typo'd kind is one of them")
+
+# Through the CLI: config.yaml's floors score the PR, and floors it can't read fail it with no level at all.
+with tempfile.TemporaryDirectory() as d:
+    run = lambda *a: subprocess.run(a, cwd=d, check=True, capture_output=True, text=True)  # noqa: E731
+    run("git", "init", "-q", "-b", "main")
+    Path(d, "AUTONOMY.yaml").write_text(yaml.safe_dump(plain))
+    run("git", "add", "-A")
+    run("git", "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", "base")
+    Path(d, "src").mkdir()
+    Path(d, "src", "vehicle.ts").write_text("x\n")
+    run("git", "add", "-A")
+    run("git", "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", "change")
+    cfg = Path(d, "cfg.yaml")
+    main_file = Path(d, "main-policy.yaml")
+    main_file.write_text(yaml.safe_dump(plain))
+
+    def scored(config):
+        cfg.write_text(yaml.safe_dump(config))
+        return subprocess.run([sys.executable, str(GATE_PY), "--base", "HEAD~1", "--author", "acme-fixer[bot]", "--config", str(cfg),
+                               "--main-policy", str(main_file), "--json"], cwd=d, capture_output=True, text=True)
+    markers = {"agent_markers": {"logins": ["acme-fixer[bot]"]}}
+    r = scored(markers)
+    assert r.returncode == 0 and json.loads(r.stdout)["level"] == "L3", r.stdout + r.stderr
+    r = scored({**markers, "floors": {"paths": LONG}})
+    out = json.loads(r.stdout)
+    assert r.returncode == 1 and out["level"] == "L1" and "src/vehicle.ts: floor L1 ('ehi')" in out["reasons"], out
+    main_file.write_text(yaml.safe_dump({"default": "L3", "paths": [{"glob": "src/**", "level": "L3"}, {"glob": "docs/**", "level": "L4"}]}))
+    r = scored({**markers, "floors": {"paths": {"vehicle": "L2"}}})
+    out = json.loads(r.stdout)
+    assert out["level"] == "L2" and "src/vehicle.ts: floor L2 ('vehicle')" in out["reasons"], ("and main's policy scores with them too", out)
+    r = scored({**markers, "floors": {"paths": {"ehi": "L0"}}})
+    assert r.returncode == 1 and r.stdout.startswith("::error title=autonomy gate::config.yaml floors.paths.ehi is 'L0'"), r.stdout + r.stderr
+    assert "no floors, no gate" in r.stdout and '"level"' not in r.stdout, "no level at all from floors it can't read"
+print("ok  through the CLI, config.yaml's floors score the PR, and floors it can't read fail it")
 
 print(f"{'FAIL' if failed else 'OK'}: {failed} failing case(s)")
 sys.exit(1 if failed else 0)

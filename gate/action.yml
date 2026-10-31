@@ -1,7 +1,7 @@
 name: autonomy gate
 description: >
-  Compute a pull request's level from its diff, the repo's AUTONOMY.yaml and its file on lunareng/autonomy's
-  main (the stricter of the two), label it level:Lx,
+  Compute a pull request's level from its diff, the repo's AUTONOMY.yaml and its file in the tenant's policy
+  repo (the stricter of the two) and the policy repo's config.yaml floors, label it level:Lx,
   write the reasons to the job summary, and fail only for an agent-authored PR at L1/L2 that the human
   owner has not approved on its current commit (an APPROVED review on the head sha passes it, so the
   caller runs on pull_request_review as well as pull_request). A PR Airlock's App opened also fails
