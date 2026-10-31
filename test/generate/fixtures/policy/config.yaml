@@ -1,4 +1,4 @@
-# An invented tenant's policy settings (acme), with every key generate/ reads.
+# An invented tenant's policy settings (acme), with every key generate/ and adopt/ read.
 human_owner: "@acme/owners"
 required_checks:
   default: ["autonomy-gate", "claude-review"]
@@ -21,3 +21,10 @@ role_runs:
   git_email_domain: acme.example
 generated:
   schedules_reader: "acme's clock"
+adopt:
+  runner: acme-ci
+  runner_note: "acme's own pool"
+  agent_logins: "acme-*[bot]"
+  human_owner_name: Dana
+  claude_section: seeds/CLAUDE-section.md
+  skip: [policy]

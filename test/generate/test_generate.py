@@ -287,7 +287,7 @@ def _():
 def _():
     assert gen(FIXTURE, "--check", repo=None, env={"GITHUB_REPOSITORY": "acme/policy"}).returncode == 0
     r = gen(FIXTURE, "--check", repo=None, env={"GITHUB_REPOSITORY": "acme/other"})
-    assert r.returncode == 1 and "FAIL: 8 stale file(s) of 16" in r.stdout, ("a renamed policy repo: every file names it", r.stdout)
+    assert r.returncode == 1 and "FAIL: 9 stale file(s) of 18" in r.stdout, ("a renamed policy repo: every file names it", r.stdout)
     d = copy()
     run = lambda *a: subprocess.run(a, cwd=d, check=True, capture_output=True)  # noqa: E731
     run("git", "init", "-q")
