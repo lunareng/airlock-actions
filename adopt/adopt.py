@@ -15,7 +15,8 @@ signed in, from a checkout of this repository at the commit the policy pins:
       Write the two workflows as rendered for this policy, to look at.
 
 Everything tenant-specific comes from the policy checkout's config.yaml (adopt/README.md). Fails closed: a missing
-setting, a stale generated file, or a policy checkout off main stops it before anything is written.
+setting, a policy checkout off main or with uncommitted changes, a repos/<name>.yaml naming another org, or (new-repo,
+protect) a stale generated file stops it before anything is written.
 """
 import argparse
 import json
