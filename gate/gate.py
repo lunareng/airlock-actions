@@ -81,7 +81,7 @@ def floor_table(kind: str, given=None) -> dict[str, str]:
     for key, level in given.items():
         if not isinstance(key, str) or not key.strip():
             raise FloorError(f"floors.{kind} has a key that isn't a word ({key!r}); quote it")
-        if level not in RANK:
+        if not isinstance(level, str) or level not in RANK:
             raise FloorError(f"floors.{kind}.{key} is {level!r}, not a level from L1 to L4")
         k = key.lower() if kind == "paths" else key
         if k not in out or RANK[level] < RANK[out[k]]:
