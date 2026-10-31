@@ -1,0 +1,78 @@
+name: airlock digest
+description: >
+  The week's digest across every repository in your policy repo's repos/: open proposals, what merged at which
+  level, the L1/L2 pull requests waiting on the owner, what was declined, CI and role-run health, catches, delivered
+  tool-requests and merges over a FAIL review verdict. It writes one issue in the policy repo, labelled digest and
+  titled "Digest: week of <Monday>", updated in place if the week's issue exists, and never writes anywhere else.
+  Run it in a checkout of the policy repo, on the token Airlock mints for the digest role (its writes: issues create
+  and edit_body on the policy repo). Its settings are config.yaml's digest and catch_logs keys (digest/README.md).
+inputs:
+  token:
+    description: the GitHub token the digest reads and writes with (the Airlock action's token output)
+    required: true
+  dry-run:
+    description: '"false" writes the issue; anything else prints the digest and writes nothing'
+    default: "true"
+  week-of:
+    description: a date (YYYY-MM-DD) in the week to digest; empty is this week
+    default: ""
+  repos:
+    description: owner/name repositories to digest, comma-separated; empty is every repos/*.yaml but digest.skip_repos
+    default: ""
+  policy-dir:
+    description: the policy repo's checkout
+    default: ${{ github.workspace }}
+outputs:
+  url:
+    description: the digest issue's URL; empty on a dry run
+    value: ${{ steps.digest.outputs.url }}
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      with:
+        python-version: "3.12"
+    - shell: bash
+      run: |
+        pip install --quiet pyyaml==6.0.3
+        # The digest runs python -I, which never reads the user site pip falls back to when site-packages isn't writable.
+        python -I -c 'import yaml' || { echo "::error title=airlock digest::pyyaml isn't importable by an isolated Python"; exit 1; }
+    - name: gh (when the runner image ships none; pinned checksum)
+      shell: bash
+      env:
+        GH_VERSION: "2.101.0"
+        GH_SHA256: "9bca2d1c16825f109907a23307628a2f0698fbf99662b73a5cf0b020293072b8"
+      run: |
+        set -euo pipefail
+        command -v gh >/dev/null && exit 0
+        dir="$RUNNER_TEMP/gh-${GH_VERSION}"; mkdir -p "$dir"
+        curl -sSfL -o "$dir/gh.tar.gz" "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz"
+        echo "${GH_SHA256}  $dir/gh.tar.gz" | sha256sum -c -
+        tar xzf "$dir/gh.tar.gz" -C "$dir" --strip-components=2 "gh_${GH_VERSION}_linux_amd64/bin/gh"
+        echo "$dir" >> "$GITHUB_PATH"
+    - id: digest
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        DRY_RUN: ${{ inputs.dry-run }}
+        WEEK_OF: ${{ inputs.week-of }}
+        REPOS: ${{ inputs.repos }}
+        POLICY_DIR: ${{ inputs.policy-dir }}
+        OWNER: ${{ github.repository_owner }}
+        POLICY_REPO: ${{ github.repository }}
+        HERE: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        # No token, no digest: fail closed rather than read or write on the job's own token.
+        [ -n "$GH_TOKEN" ] || { echo "::error title=airlock digest::no token; the digest stops here"; exit 1; }
+        args=(--policy-dir "$POLICY_DIR" --owner "$OWNER" --policy-repo "$POLICY_REPO")
+        [ "$DRY_RUN" = "false" ] || args+=(--dry-run)
+        [ -z "$WEEK_OF" ] || args+=(--week-of "$WEEK_OF")
+        [ -z "$REPOS" ] || args+=(--repos "$REPOS")
+        python -I "$HERE/digest.py" "${args[@]}" | tee "$RUNNER_TEMP/digest.md"
+        if [ "$DRY_RUN" = "false" ]; then
+          echo "url=$(tail -n 1 "$RUNNER_TEMP/digest.md")" >> "$GITHUB_OUTPUT"
+          echo "## Digest: $(tail -n 1 "$RUNNER_TEMP/digest.md")" >> "$GITHUB_STEP_SUMMARY"
+        else
+          { echo '## Digest (dry run)'; echo; cat "$RUNNER_TEMP/digest.md"; } >> "$GITHUB_STEP_SUMMARY"
+        fi
