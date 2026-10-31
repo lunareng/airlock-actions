@@ -84,7 +84,7 @@ import re
 import subprocess
 import sys
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import yaml
@@ -465,6 +465,14 @@ KNOWN_KEYS = {"product_bugs", "tool_requests", "tool_request_label", "reviews", 
               "override", "deployer_login", "clock_login", "gate_rerun", "run_failed", "ci_main"}
 
 
+def is_date(d) -> bool:
+    """A YYYY-MM-DD date that exists (YAML may already have read it as one)."""
+    try:
+        return re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(d)) is not None and bool(date.fromisoformat(str(d)))
+    except ValueError:
+        return False
+
+
 def shape_problems(cfg: dict) -> list[str]:
     """router.yaml's shape: every key known and with a value, every list a list of `owner/name` strings in the
     tenant's organization (written as GITHUB_REPOSITORY writes it, since every rule compares repos exactly), every
@@ -498,6 +506,7 @@ def shape_problems(cfg: dict) -> list[str]:
     if "product_bugs" in cfg and cfg["product_bugs"] is not None and not isinstance(cfg["product_bugs"], dict):
         out.append("router.yaml: product_bugs is {repos: [...], sim_repos: {<sim repo>: <product label>}}, not a list")
     elif mapping("product_bugs", cfg.get("product_bugs")):
+        out.extend(f"router.yaml: unknown key `product_bugs.{k}`" for k in sorted(set(cfg["product_bugs"]) - {"repos", "sim_repos"}))
         repos("product_bugs.repos", cfg["product_bugs"].get("repos"))
         if mapping("product_bugs.sim_repos", cfg["product_bugs"].get("sim_repos")):
             strings("product_bugs.sim_repos", cfg["product_bugs"]["sim_repos"])
@@ -505,18 +514,21 @@ def shape_problems(cfg: dict) -> list[str]:
         repos("ci_main", list(cfg["ci_main"]))
         strings("ci_main", cfg["ci_main"])
     if mapping("gate_rerun", cfg.get("gate_rerun")):
+        out.extend(f"router.yaml: unknown key `gate_rerun.{k}`" for k in sorted(set(cfg["gate_rerun"]) - {"repos", "window_days", "max_per_pass"}))
         repos("gate_rerun.repos", cfg["gate_rerun"].get("repos"))
+        out.extend(f"router.yaml: `gate_rerun.{k}` is a whole number" for k in ("window_days", "max_per_pass")
+                   if k in cfg["gate_rerun"] and not (isinstance(cfg["gate_rerun"][k], int) and not isinstance(cfg["gate_rerun"][k], bool)))
     pb = cfg.get("pr_budget")
     if pb is not None and not (isinstance(pb, int) and not isinstance(pb, bool)) and not (
             isinstance(pb, dict) and all(isinstance(n, int) and not isinstance(n, bool) for n in pb.values())):
-        out.append("router.yaml: `pr_budget` is a number, or a mapping of role to number with `default`")
+        out.append("router.yaml: `pr_budget` is a number, or a mapping of role (or `default`) to number")
     da = cfg.get("digest_answers")
     if da and not (isinstance(da, dict) and isinstance(da.get("role"), str) and da["role"]):
         out.append("router.yaml: digest_answers names the role its answers start: {role: <role>}")
     dl = cfg.get("delivered")
     if dl is not None and not isinstance(dl, bool) and not (
             isinstance(dl, dict) and set(dl) <= {"backfill"} and isinstance(dl.get("backfill"), list) and len(dl["backfill"]) == 2
-            and all(re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(d)) for d in dl["backfill"])):
+            and all(is_date(d) for d in dl["backfill"])):
         out.append("router.yaml: `delivered` is true, false or {backfill: [<YYYY-MM-DD from>, <YYYY-MM-DD until>]}")
     for key in ("tool_request_label", "deployer_login", "clock_login"):
         if cfg.get(key) is not None and not isinstance(cfg[key], str):
