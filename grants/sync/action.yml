@@ -1,0 +1,48 @@
+name: airlock grants sync
+description: >
+  Push each changed role's grant (its scopes, repos, bash prefixes, level and floors, from roles/<role>/role.yaml at
+  this commit) to the server that enforces it, signed in as the GitHub App that server trusts to sync grants. Run it on
+  pushes to main that change a role file, in a checkout of the policy repo with fetch-depth 0. The protocol the server
+  implements is in grants/sync/README.md.
+inputs:
+  api-url:
+    description: the server's origin
+    required: true
+  app-id:
+    description: the id of the GitHub App the server trusts to sync grants
+    default: ""
+  private-key:
+    description: that App's private key (pass a secret)
+    default: ""
+  roles:
+    description: space-separated role names; empty means every role the push changed, or every role on a dispatch
+    default: ""
+  dry-run:
+    description: "true prints the bodies and sends nothing"
+    default: "false"
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      with:
+        python-version: "3.12"
+    - shell: bash
+      run: |
+        pip install --quiet pyyaml==6.0.3
+        python -I -c 'import yaml' || { echo "::error title=airlock grants sync::pyyaml isn't importable by an isolated Python"; exit 1; }
+    - shell: bash
+      env:
+        API: ${{ inputs.api-url }}
+        APP_ID: ${{ inputs.app-id }}
+        PRIVATE_KEY: ${{ inputs.private-key }}
+        ROLES: ${{ inputs.roles }}
+        DRY_RUN: ${{ inputs.dry-run }}
+        SHA: ${{ github.sha }}
+        BEFORE: ${{ github.event.before }}
+        RUN_REF: ${{ github.run_id }}
+        LAUNCHED_BY: ${{ github.actor }}
+        HERE: ${{ github.action_path }}
+      run: |
+        case "$DRY_RUN" in true) dry=--dry-run ;; false) dry= ;; *) echo "::error::dry-run must be true or false"; exit 1 ;; esac
+        python -I "$HERE/sync.py" --api "$API" --sha "$SHA" --before "$BEFORE" --roles "$ROLES" $dry | tee "$RUNNER_TEMP/grants.json"
+        { echo '## Grant sync'; echo; echo '```json'; cat "$RUNNER_TEMP/grants.json"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
