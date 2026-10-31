@@ -452,7 +452,7 @@ print("ok  a tenant's floors add words and tighten; one written looser than the 
 for bad, says in (({"paths": {"ehi": "L5"}}, "floors.paths.ehi is 'L5', not a level"), ({"paths": {True: "L1"}}, "isn't a word"),
                   ({"paths": ["ehi"]}, "floors.paths is not a mapping"), ({"path": {"ehi": "L1"}}, "floors has path"),
                   ("ehi: L1", "floors is not a mapping"), ({"actions": {"send": None}}, "floors.actions.send is None"),
-                  ({"paths": {"": "L1"}}, "isn't a word")):
+                  ({"paths": {"": "L1"}}, "isn't a word"), ({"paths": {"ehi": ["L1"]}}, "not a level")):
     try:
         floors_of({"floors": bad})
         raise AssertionError(f"floors {bad!r} should not read")

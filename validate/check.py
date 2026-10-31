@@ -132,7 +132,7 @@ def check_floors(doc: dict, rel: str, index, problems: Problems) -> dict[str, di
             if not isinstance(key, str) or not key.strip():
                 problems.add(rel, where, f"floors.{kind} has a key that isn't a word ({key!r}); quote it")
                 continue
-            if level not in RANK:
+            if not isinstance(level, str) or level not in RANK:
                 problems.add(rel, where, f"floors.{kind}.{key} is {level!r}; a floor is a level from L1 to L4")
                 continue
             for word, floor in DEFAULT_FLOORS[kind].items():
