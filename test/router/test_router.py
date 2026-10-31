@@ -523,6 +523,10 @@ assert any("maps 'sim-shop' to None" in p for p in _p(product_bugs={"repos": ["a
 assert any("`pr_budget` is a number" in p for p in _p(pr_budget=True)) and any("`pr_budget` is a number" in p for p in _p(pr_budget="2"))
 assert not _p(pr_budget=3) and not _p(pr_budget={"default": 1})
 assert any("`delivered` is true" in p for p in _p(delivered={"backfill": ["soon"]})) and not _p(delivered=True)
+assert any("`delivered` is true" in p for p in _p(delivered={"backfill": ["2026-13-45", "2026-11-01"]})), "a date that doesn't exist"
+assert any("`gate_rerun.window_days` is a whole number" in p for p in _p(gate_rerun={**RCFG["gate_rerun"], "window_days": "7d"}))
+assert any("unknown key `product_bugs.sim_repo`" in p for p in _p(product_bugs={"repos": ["acme/api"], "sim_repo": {}})), "a typo in a sub-key"
+assert any("unknown key `gate_rerun.max`" in p for p in _p(gate_rerun={**RCFG["gate_rerun"], "max": 3}))
 _both = _p(tool_request=["acme/api"], reviews=[r for r in RCFG["reviews"] if r != "acme/station"], tool_requests=[r for r in RCFG["tool_requests"] if r != "acme/station"])
 assert any("unknown key" in p for p in _both) and any("acme/station is in no router.yaml list" in p for p in _both), "an unknown key hides no other problem"
 import contextlib as _ctx, io as _io, os as _os, tempfile as _tmp  # noqa: E401,E402
