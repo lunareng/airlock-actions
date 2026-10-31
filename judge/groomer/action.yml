@@ -1,0 +1,110 @@
+name: airlock judge groomer
+description: >
+  The groomer's judge: pick conversion and signal coverage, read from GitHub and nothing else. Of the trailing
+  weeks' picks (issues given the pick label), the share that reached a merged PR within the window, and how many
+  picks had no `## Signal` section with a link; also open issues unranked after 7 days and demand issues with
+  stale value fields. Fails the step when the pass condition fails, and when it can't measure. Run it in a
+  checkout of the policy repo: the repositories are the role file's writes.repos unless `repos` names them.
+  The report is the job summary, the `report` output and (with `artifact`) an artifact.
+inputs:
+  role:
+    description: the role whose file names the repositories (roles/<role>/role.yaml writes.repos)
+    default: groomer
+  repos:
+    description: "owner/name repositories, comma or space separated, in place of the role file's (default: the file's)"
+    default: ""
+  pick-label:
+    description: the label that makes an issue a pick
+    default: "triage:this-week"
+  priority-prefix:
+    description: an open issue with no label starting with this is unranked
+    default: "priority:"
+  demand-label:
+    description: the label of a demand issue, whose body must carry the value fields
+    default: "type:demand"
+  demand-fields:
+    description: "the value fields a demand issue's body must have, as `field: value` lines (looked_up, a date, is always one)"
+    default: "mrr_at_risk pipeline_blocked askers moat looked_up"
+  weeks:
+    description: how many trailing weeks of picks to measure
+    default: "4"
+  window-days:
+    description: how many days a pick has to reach a merged PR
+    default: "14"
+  min-conversion:
+    description: the pass condition's least pick conversion (0 to 1)
+    default: "0.5"
+  max-without-signal:
+    description: the pass condition's most picks without a linked signal
+    default: "0"
+  token:
+    description: a token that reads issues and pull requests in every repository measured (the default reads only the caller's)
+    default: ${{ github.token }}
+  policy-path:
+    description: the policy repo checkout
+    default: "."
+  artifact:
+    description: the name of an artifact to upload the report as (empty for none)
+    default: groomer-judge
+outputs:
+  pass:
+    description: "true or false"
+    value: ${{ steps.judge.outputs.pass }}
+  pick-conversion:
+    description: the share of picks converted, empty when there were none
+    value: ${{ steps.judge.outputs.pick_conversion }}
+  report:
+    description: the report file's path
+    value: ${{ steps.judge.outputs.report }}
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      with:
+        python-version: "3.12"
+    - shell: bash
+      run: |
+        pip install --quiet pyyaml==6.0.3
+        # The judge runs python -I, which never reads the user site pip falls back to when site-packages isn't writable.
+        python -I -c 'import yaml' || { echo "::error title=airlock judge groomer::pyyaml isn't importable by an isolated Python"; exit 1; }
+    - id: judge
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        HERE: ${{ github.action_path }}
+        POLICY: ${{ inputs.policy-path }}
+        ROLE: ${{ inputs.role }}
+        REPOS: ${{ inputs.repos }}
+        PICK_LABEL: ${{ inputs.pick-label }}
+        PRIORITY_PREFIX: ${{ inputs.priority-prefix }}
+        DEMAND_LABEL: ${{ inputs.demand-label }}
+        DEMAND_FIELDS: ${{ inputs.demand-fields }}
+        WEEKS: ${{ inputs.weeks }}
+        WINDOW_DAYS: ${{ inputs.window-days }}
+        MIN_CONVERSION: ${{ inputs.min-conversion }}
+        MAX_WITHOUT_SIGNAL: ${{ inputs.max-without-signal }}
+      run: |
+        report="$RUNNER_TEMP/groomer-judge.json"
+        set +e
+        python -I "$HERE/judge.py" --policy "$POLICY" --role "$ROLE" --repos "$REPOS" \
+          --pick-label "$PICK_LABEL" --priority-prefix "$PRIORITY_PREFIX" \
+          --demand-label "$DEMAND_LABEL" --demand-fields "$DEMAND_FIELDS" \
+          --weeks "$WEEKS" --window-days "$WINDOW_DAYS" \
+          --min-conversion "$MIN_CONVERSION" --max-without-signal "$MAX_WITHOUT_SIGNAL" > "$report"
+        rc=$?
+        set -e
+        cat "$report"
+        { echo '## Groomer judge'; echo; echo '```json'; cat "$report"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+        # Any exit but 0 is a fail, an unparseable report too: the judge never passes by default.
+        pass=$(python -I -c 'import json,sys; print("true" if json.load(open(sys.argv[1])).get("pass") is True else "false")' "$report" 2>/dev/null || echo false)
+        [ "$rc" -eq 0 ] || pass=false
+        conv=$(python -I -c 'import json,sys; v=json.load(open(sys.argv[1])).get("pick_conversion"); print("" if v is None else v)' "$report" 2>/dev/null || true)
+        { echo "pass=$pass"; echo "pick_conversion=$conv"; echo "report=$report"; } >> "$GITHUB_OUTPUT"
+        if [ "$rc" -eq 2 ]; then echo "::error title=airlock judge groomer::could not measure: see the report"; fi
+        if [ "$rc" -eq 1 ]; then echo "::error title=airlock judge groomer::the pass condition failed"; fi
+        exit $rc
+    - if: always() && inputs.artifact != '' && steps.judge.outputs.report != ''
+      uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+      with:
+        name: ${{ inputs.artifact }}
+        path: ${{ steps.judge.outputs.report }}

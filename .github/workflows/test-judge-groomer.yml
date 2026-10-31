@@ -1,0 +1,67 @@
+# judge/groomer's tests: the judge against recorded GitHub answers for an invented acme organization (no network),
+# then the composite action itself, as a caller runs it, against the same fake gh: a measured run with no picks passes
+# and sets its outputs, and a run that can't read GitHub fails the step with pass=false.
+name: test judge groomer
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: test-judge-groomer-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  judge:
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest # a public repository: GitHub-hosted runners
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: the judge, against recorded answers
+        run: |
+          pip install --quiet pyyaml==6.0.3
+          python test/judge-groomer/test_judge_groomer.py
+      - name: a fake gh first on PATH, answering from the recorded answers
+        run: |
+          mkdir -p "$RUNNER_TEMP/fake"
+          cp test/judge-groomer/gh "$RUNNER_TEMP/fake/gh"
+          chmod +x "$RUNNER_TEMP/fake/gh"
+          # No labelling events, so the run doesn't depend on today's date (the judge's own test fixes it with --now).
+          python -c 'import json,sys; a=json.load(open(sys.argv[1])); [r.update(answer=[]) for r in a["rules"] if r["path"].endswith("/events")]; json.dump(a, open(sys.argv[2], "w"))' test/judge-groomer/fixtures/github.json "$RUNNER_TEMP/answers.json"
+          echo '{"rules": []}' > "$RUNNER_TEMP/nothing.json"
+          echo "$RUNNER_TEMP/fake" >> "$GITHUB_PATH"
+          echo "GH_LOG=$RUNNER_TEMP/gh.log" >> "$GITHUB_ENV"
+      - uses: ./judge/groomer
+        id: measured
+        env:
+          GH_ANSWERS: ${{ runner.temp }}/answers.json
+        with:
+          policy-path: test/judge-groomer/fixtures/policy
+          artifact: ""
+      - name: a measured run passes and says what it read
+        env:
+          PASS: ${{ steps.measured.outputs.pass }}
+          REPORT: ${{ steps.measured.outputs.report }}
+        run: |
+          test "$PASS" = true
+          python -c 'import json,sys; r=json.load(open(sys.argv[1])); assert r["repos"] == ["acme/api", "acme/web"], r; assert r["pass"] is True and r["picks"] == 0 and r["stale_demand"] >= 1, r' "$REPORT"
+          grep -q 'repos/acme/api/issues' "$GH_LOG"
+      - uses: ./judge/groomer
+        id: unread
+        continue-on-error: true
+        env:
+          GH_ANSWERS: ${{ runner.temp }}/nothing.json
+        with:
+          policy-path: test/judge-groomer/fixtures/policy
+          artifact: ""
+      - name: a run that can't read GitHub fails, with pass=false
+        env:
+          OUTCOME: ${{ steps.unread.outcome }}
+          PASS: ${{ steps.unread.outputs.pass }}
+        run: |
+          test "$OUTCOME" = failure
+          test "$PASS" = false

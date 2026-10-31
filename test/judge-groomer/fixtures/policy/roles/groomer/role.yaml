@@ -1,0 +1,22 @@
+schema: 1
+role: groomer
+# An invented tenant's groomer (acme), shaped like a real policy repo's role file.
+level: L4
+brief: roles/groomer/BRIEF.md
+judge:
+  metric: pick_conversion_and_signal_coverage
+  source: "ci:acme/policy/.github/workflows/judge-groomer.yml (weekly, reads GitHub only)"
+  pass: ">= 0.5 of the trailing 4 weeks' picks reached a merged PR within 14 days, and 0 picks without a linked signal"
+  check: {repo: acme/policy, workflow: judge-groomer.yml, branch: main, max_age_days: 7}
+writes:
+  repos:
+    - acme/api
+    - acme/web
+  issues: [create, label, edit_body, comment]
+  pull_requests: []
+run:
+  schedule: "0 13 * * 1-5"
+  model: claude-sonnet-5-5
+  bash: ["gh api", "gh issue"]
+floors:
+  - Never closes an issue.
