@@ -825,6 +825,14 @@ def review_verdict(comments: list[dict], sha: str) -> str | None:
     return verdict
 
 
+def override_repos() -> tuple[set[str], list[str]]:
+    """The repos the override rule asks in: those that require claude-review (review_required_repos) and that the
+    router's role writes to. The rest it can't comment in, so they're returned to be named once, not written to."""
+    required = set(review_required_repos())
+    writes = set(role_repos(ROUTER_ROLE))
+    return required & writes, sorted(required - writes)
+
+
 def override_plan(pr: dict, comments: list[dict]) -> dict | None:
     """A merged PR and its conversation. FAIL on the merged head gets one comment asking whoever merged it for
     a reason (marker per PR). The deployer's PRs, and PRs with PASS or no verdict on that head, get nothing.
@@ -1160,7 +1168,10 @@ def main() -> int:
                 report["closed"].append(f"{repo}#{plan['close']['number']}")
 
     if cfg.get("override"):
-        watched = set(review_required_repos())
+        watched, unreachable = override_repos()
+        if unreachable:
+            print(f"::warning::the override rule skips {', '.join(unreachable)}: they require claude-review, but the {ROUTER_ROLE} "
+                  f"role's writes.repos doesn't include them, so it can't ask there", file=sys.stderr)
         since = (now - timedelta(hours=48)).date().isoformat()  # whole days; merged_at below trims to 48 hours
         not_deployer = f"+-author:app/{DEPLOYER_LOGIN.removesuffix('[bot]')}" if DEPLOYER_LOGIN else ""
         result = gh.get("search/issues", q=f"org:{ORG}+is:pr+is:merged+merged:>={since}{not_deployer}", sort="updated", order="desc", per_page=100)
