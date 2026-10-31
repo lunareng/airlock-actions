@@ -1,0 +1,49 @@
+name: airlock generate
+description: >
+  Generate a policy repo's enforcement from its policy files: each agent role's workflow, each repository's CODEOWNERS
+  and branch-protection body, the GitHub App permissions of a role not on Airlock, and the schedules a clock dispatches.
+  Mode check (the default, for CI) fails on any stale or leftover file, each an error annotation; mode write writes
+  them. Run it in a checkout of the policy repo. Settings come from its config.yaml (generate/README.md).
+inputs:
+  mode:
+    description: "check: fail if any generated file is stale; write: write them"
+    default: check
+  policy:
+    description: the policy repo checkout, relative to the workspace
+    default: "."
+  repo:
+    description: "the policy repo's full name, owner/name, for the files' provenance lines and schedules.json"
+    default: ${{ github.repository }}
+outputs:
+  stale:
+    description: "in check mode, how many files are stale (0 when everything matches)"
+    value: ${{ steps.generate.outputs.stale }}
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      with:
+        python-version: "3.12"
+    - shell: bash
+      run: |
+        pip install --quiet pyyaml==6.0.3
+        # The generator runs python -I, which never reads the user site pip falls back to when site-packages isn't writable.
+        python -I -c 'import yaml' || { echo "::error title=airlock generate::pyyaml isn't importable by an isolated Python"; exit 1; }
+    - id: generate
+      shell: bash
+      env:
+        MODE: ${{ inputs.mode }}
+        POLICY: ${{ inputs.policy }}
+        REPO: ${{ inputs.repo }}
+        HERE: ${{ github.action_path }}
+      run: |
+        case "$MODE" in
+          check|write) ;;
+          *) echo "::error title=airlock generate::mode must be check or write, not '$MODE'"; exit 1 ;;
+        esac
+        set +e
+        python -I "$HERE/generate.py" --policy "$GITHUB_WORKSPACE/$POLICY" --repo "$REPO" "--$MODE" | tee "$RUNNER_TEMP/generate.out"
+        status=${PIPESTATUS[0]}
+        set -e
+        echo "stale=$(grep -c 'is stale' "$RUNNER_TEMP/generate.out")" >> "$GITHUB_OUTPUT"
+        exit "$status"

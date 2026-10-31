@@ -1,0 +1,30 @@
+# An invented tenant's policy settings (acme), with every key generate/ and adopt/ read.
+human_owner: "@acme/owners"
+required_checks:
+  default: ["autonomy-gate", "claude-review"]
+  policy: ["validate"]
+  web: ["autonomy-gate", "claude-review", "build"]
+strict: [web]
+owner_review: true
+clock:
+  - workflow: role-router.yml
+    cron: "*/30 * * * *"
+    inputs: {dry_run: "false"}
+  - workflow: role-triage.yml
+    cron: "0 14 * * 3"
+    inputs: {signal: "routine:weekly"}
+airlock_actions:
+  ref: 0123456789abcdef0123456789abcdef01234567
+  note: main at acme's pin
+role_runs:
+  runner: acme-agents
+  git_email_domain: acme.example
+generated:
+  schedules_reader: "acme's clock"
+adopt:
+  runner: acme-ci
+  runner_note: "acme's own pool"
+  agent_logins: "acme-*[bot]"
+  human_owner_name: Dana
+  claude_section: seeds/CLAUDE-section.md
+  skip: [policy]

@@ -1,0 +1,17 @@
+{
+  "name": "acme-clock",
+  "shared_by": [
+    "clock"
+  ],
+  "repositories": [
+    "acme/policy"
+  ],
+  "permissions": {
+    "metadata": "read",
+    "contents": "read",
+    "issues": "read",
+    "pull_requests": "read",
+    "actions": "write"
+  },
+  "note": "Install on exactly these repositories. The app's login is <name>[bot]; put it in identity.github_login."
+}

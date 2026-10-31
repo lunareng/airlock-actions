@@ -1,0 +1,12 @@
+schema: 1
+role: triage
+level: L3
+brief: roles/triage/BRIEF.md
+identity:
+  key_store: "airlock"
+writes:
+  repos: [acme/api, acme/web]
+  issues: [comment, label]
+run:
+  model: claude-sonnet-5-5
+  schedule: "15 9 * * 1-5"

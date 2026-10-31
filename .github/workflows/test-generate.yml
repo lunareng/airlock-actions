@@ -1,0 +1,30 @@
+# generate/'s tests: the generator against an invented acme policy repo (test/generate/fixtures/policy), and the
+# action itself run in check mode against that fixture, as a tenant's validate workflow runs it.
+name: test generate
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: test-generate-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  test:
+    runs-on: ubuntu-latest # a public repository: GitHub-hosted runners, free, and the self-hosted pools take no public repositories
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: the generator
+        run: |
+          pip install --quiet pyyaml==6.0.3
+          python test/generate/test_generate.py
+      - name: the action, check mode, on the fixture
+        uses: ./generate
+        with:
+          policy: test/generate/fixtures/policy
+          repo: acme/policy

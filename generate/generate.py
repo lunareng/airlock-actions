@@ -1,0 +1,370 @@
+#!/usr/bin/env python3
+"""Generate a policy repo's enforcement from its policy files (lunareng/airlock-actions/generate).
+
+Reads, in the policy repo checkout (--policy, default the current directory):
+  config.yaml            human_owner, required_checks, strict, owner_review, clock, and this tool's own keys
+                         (airlock_actions, role_runs, generated; generate/README.md)
+  repos/<repo>.yaml      each repository's levels
+  roles/<role>/role.yaml each role
+
+Writes (paths from config.yaml `generated`, defaults shown):
+  .github/workflows/role-<role>.yml           each agent role with a `run`: its triggers and a call to this repository's
+                                              role workflow, pinned to config.yaml airlock_actions.ref
+  generated/codeowners/<repo>.CODEOWNERS      commit as .github/CODEOWNERS in that repo
+  generated/branch-protection/<repo>.json     body for PUT /repos/<org>/<repo>/branches/main/protection
+  generated/roles/<role>/github-app.json      a role's GitHub App permissions, derived from `writes`; only for a role
+                                              with an App of its own (not identity.key_store: airlock)
+  generated/schedules.json                    every timed workflow and its cron, for whatever clock dispatches them
+
+Rules (from the charter every tenant shares):
+  L1 or L2 path/default  -> a human must approve: a CODEOWNERS line to the human owner, code-owner review required.
+  L3 or L4               -> no CODEOWNERS line; the agent reviewer's verdict check is what gates merge.
+  Every repo             -> the required checks config.yaml names, linear history, admins included, no force pushes,
+                            no deletions.
+
+Usage:
+  generate.py [--policy DIR] [--repo OWNER/NAME] --check   exit 1 if any committed file differs from what the policy
+                                                          produces, or a generated file nothing produces is left
+  generate.py [--policy DIR] [--repo OWNER/NAME] --write   write the files (and delete the ones nothing produces)
+
+--repo is the policy repo's full name, for the files' provenance lines and schedules.json; it defaults to
+GITHUB_REPOSITORY, then the checkout's origin remote. Fails closed: a missing or malformed setting is an error, never
+a guess.
+"""
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+import yaml
+
+RANK = {"L1": 1, "L2": 2, "L3": 3, "L4": 4}
+ROLE_WORKFLOW = "lunareng/airlock-actions/.github/workflows/role.yml"
+DEFAULT_PATHS = {
+    "codeowners": "generated/codeowners",
+    "branch_protection": "generated/branch-protection",
+    "apps": "generated/roles",
+    "schedules": "generated/schedules.json",
+}
+NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+REF = re.compile(r"^([0-9a-f]{40}|v\d+\.\d+\.\d+)$")
+LABEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+DOMAIN = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$")
+FULL_NAME = re.compile(r"^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$")
+
+
+class PolicyError(Exception):
+    """A setting or file the generator can't trust: it writes nothing and says why."""
+
+
+def one_line(value, key: str) -> str:
+    if not isinstance(value, str) or not value or "\n" in value or "\r" in value:
+        raise PolicyError(f"config.yaml {key}: must be a one-line string")
+    return value
+
+
+class Settings:
+    """config.yaml, read once and checked before anything is rendered."""
+
+    def __init__(self, root: Path, repo: str):
+        path = root / "config.yaml"
+        if not path.is_file():
+            raise PolicyError("no config.yaml in the policy checkout")
+        cfg = yaml.safe_load(path.read_text()) or {}
+        if not isinstance(cfg, dict):
+            raise PolicyError("config.yaml: not a mapping")
+        self.cfg = cfg
+        if not FULL_NAME.match(repo or ""):
+            raise PolicyError(f"the policy repo's name {repo!r} is not owner/name")
+        self.repo = repo
+        self.org = repo.split("/")[0]
+        self.human = one_line(cfg.get("human_owner"), "human_owner")
+        checks = cfg.get("required_checks")
+        if not isinstance(checks, dict) or not isinstance(checks.get("default"), list):
+            raise PolicyError("config.yaml required_checks: needs a `default` list")
+        self.checks = checks
+        self.strict = set(cfg.get("strict") or [])
+        # Owner review on L1/L2 paths binds only once every agent commits under its own login: an explicit switch.
+        self.owner_review = bool(cfg.get("owner_review", False))
+        self.clock = cfg.get("clock") or []
+
+        pin = cfg.get("airlock_actions")
+        if not isinstance(pin, dict) or not REF.match(str(pin.get("ref", ""))):
+            raise PolicyError("config.yaml airlock_actions.ref: a full commit SHA or a vX.Y.Z release of lunareng/airlock-actions")
+        self.ref = pin["ref"]
+        self.ref_note = one_line(pin["note"], "airlock_actions.note") if pin.get("note") is not None else ""
+
+        runs = cfg.get("role_runs") or {}
+        if not isinstance(runs, dict):
+            raise PolicyError("config.yaml role_runs: not a mapping")
+        self.runner = runs.get("runner")
+        if self.runner is not None and not LABEL.match(str(self.runner)):
+            raise PolicyError("config.yaml role_runs.runner: one runner label")
+        self.email_domain = runs.get("git_email_domain")
+        if self.email_domain is not None and not DOMAIN.match(str(self.email_domain)):
+            raise PolicyError("config.yaml role_runs.git_email_domain: a domain name")
+
+        out = cfg.get("generated") or {}
+        if not isinstance(out, dict):
+            raise PolicyError("config.yaml generated: not a mapping")
+        self.paths = {}
+        for key, default in DEFAULT_PATHS.items():
+            rel = out.get(key, default)
+            p = Path(one_line(rel, f"generated.{key}"))
+            if p.is_absolute() or ".." in p.parts or p.parts[:1] == (".github",):
+                raise PolicyError(f"config.yaml generated.{key}: a path inside the policy repo, outside .github")
+            self.paths[key] = root / p
+        self.schedules_rel = str(Path(out.get("schedules", DEFAULT_PATHS["schedules"])))
+        self.reader = one_line(out["schedules_reader"], "generated.schedules_reader") if out.get("schedules_reader") is not None else "the clock"
+
+
+def load(path: Path) -> dict:
+    doc = yaml.safe_load(path.read_text())
+    if not isinstance(doc, dict):
+        raise PolicyError(f"{path.name}: not a mapping")
+    return doc
+
+
+def level(value, where: str) -> int:
+    if value not in RANK:
+        raise PolicyError(f"{where}: level {value!r} is not L1 to L4")
+    return RANK[value]
+
+
+def codeowners(s: Settings, doc: dict, name: str) -> str:
+    lines = [f"# GENERATED by {s.repo} from repos/{name}.yaml. Do not edit here; change the policy.\n"]
+    default = level(doc.get("default"), f"repos/{name}.yaml default")
+    if default <= 2:
+        lines.append(f"* {s.human}")
+    # AUTONOMY.yaml itself: loosening always needs the human. CODEOWNERS can't tell tighten from loosen, so the file
+    # is owned, and a tightening's auto-merge comes from the validate workflow, not a review.
+    lines.append(f"/AUTONOMY.yaml {s.human}")
+    for p in doc.get("paths", []):
+        lv = level(p.get("level"), f"repos/{name}.yaml {p.get('glob')}")
+        if lv <= 2 and lv < default:
+            why = f"  # {p['level']}: {p['why']}" if p.get("why") else f"  # {p['level']}"
+            lines.append(f"{p['glob']} {s.human}{why}")
+    return "\n".join(lines) + "\n"
+
+
+def protection(s: Settings, doc: dict, name: str) -> dict:
+    default = level(doc.get("default"), f"repos/{name}.yaml default")
+    checks = s.checks.get(name, s.checks["default"])
+    human_gate = default <= 2 or any(level(p.get("level"), f"repos/{name}.yaml") <= 2 for p in doc.get("paths", []))
+    return {
+        "required_status_checks": {"strict": name in s.strict, "contexts": checks},
+        "enforce_admins": True,
+        "required_pull_request_reviews": {
+            "required_approving_review_count": 1 if (s.owner_review and default <= 2) else 0,
+            "require_code_owner_reviews": s.owner_review and human_gate,
+            "dismiss_stale_reviews": True,
+        },
+        "restrictions": None,
+        "required_linear_history": True,
+        "allow_force_pushes": False,
+        "allow_deletions": False,
+        "required_conversation_resolution": True,
+    }
+
+
+def github_app(s: Settings, role: dict, all_roles: list[dict]) -> dict:
+    """GitHub App permissions from what the role writes. Read everywhere; write only the kinds it lists.
+    Roles that share a github_login share one App, so its permissions and repositories are their union."""
+    login = (role.get("identity") or {}).get("github_login")
+    sharing = [r for r in all_roles if login and (r.get("identity") or {}).get("github_login") == login] or [role]
+    perms = {"metadata": "read", "contents": "read", "issues": "read", "pull_requests": "read"}
+    repos: set[str] = set()
+    for r in sharing:
+        w = r.get("writes") or {}
+        repos |= set(w.get("repos", []))
+        if w.get("issues"):
+            perms["issues"] = "write"
+        if "actions" in w.get("reads", []):
+            perms["actions"] = "read"
+        if w.get("dispatch"):
+            perms["actions"] = "write"  # starting a workflow (workflow_dispatch) needs Actions: write
+        if w.get("pull_requests"):
+            perms["pull_requests"] = "write"
+            perms["contents"] = "write"  # opening a PR needs a branch
+        if w.get("workflows"):
+            perms["workflows"] = "write"
+    name = login.removesuffix("[bot]") if login else f"{s.org}-{role['role']}"
+    return {
+        "name": name,
+        "shared_by": sorted(r["role"] for r in sharing),
+        "repositories": sorted(repos),
+        "permissions": perms,
+        "note": "Install on exactly these repositories. The app's login is <name>[bot]; put it in identity.github_login.",
+    }
+
+
+def on_airlock(role: dict) -> bool:
+    """A role whose GitHub token Airlock mints for each run: no App or key of its own."""
+    return (role.get("identity") or {}).get("key_store") == "airlock"
+
+
+def is_agent(role: dict) -> bool:
+    return role.get("kind", "agent") == "agent"
+
+
+def role_workflow(s: Settings, role: dict) -> str:
+    """An agent role's workflow: its triggers, and a call to Airlock's role workflow."""
+    r = role["role"]
+    note = f" # {s.ref_note}" if s.ref_note else ""
+    extra = ""
+    if s.runner is not None:
+        extra += f"\n      runner: {s.runner}"
+    if s.email_domain is not None:
+        extra += f"\n      git-email-domain: {s.email_domain}"
+    return f"""# GENERATED by {s.repo} from roles/{r}/role.yaml. Do not edit here; change the role.
+# One run of the {r}: lunareng/airlock-actions' role workflow reads roles/{r}/role.yaml at the run's commit (its
+# repositories, model, turns, tools and minutes) and gets the run's token, MCP sessions and telemetry from Airlock.
+# Its timer is {s.reader} ({s.schedules_rel}: "{role['run']['schedule']}"), which dispatches with
+# clock=true; those runs are off until the repository variable AGENTS_ENABLED is "true". A dispatch without clock
+# (the router, a person) runs once.
+name: role {r}
+on:
+  workflow_dispatch:
+    inputs:
+      signal:
+        description: "a signal URL to lead with (optional)"
+        type: string
+        default: ""
+      clock:
+        description: "set by the clock: a scheduled run, subject to AGENTS_ENABLED"
+        type: boolean
+        default: false
+permissions:
+  contents: read
+  id-token: write   # a GitHub OIDC token for Airlock: proof of this run, no repo access
+concurrency:
+  group: role-{r}
+  cancel-in-progress: false
+jobs:
+  run:
+    if: ${{{{ !inputs.clock || vars.AGENTS_ENABLED == 'true' }}}}
+    uses: {ROLE_WORKFLOW}@{s.ref}{note}
+    with:
+      role: {r}
+      signal: ${{{{ inputs.signal }}}}{extra}
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{{{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}}}
+"""
+
+
+def read_roles(root: Path) -> list[dict]:
+    out = []
+    for p in sorted((root / "roles").glob("*/role.yaml")):
+        doc = load(p)
+        if doc.get("role") != p.parent.name or not NAME.match(str(doc.get("role", ""))):
+            raise PolicyError(f"roles/{p.parent.name}/role.yaml: `role` must be {p.parent.name!r}")
+        out.append(doc)
+    return out
+
+
+def schedules(s: Settings, roles: list[dict]) -> dict:
+    """Every timed workflow, for the clock: the agent roles' run.schedule and config.yaml's `clock`."""
+    out = []
+    for role in roles:
+        run = role.get("run") or {}
+        if is_agent(role) and run.get("schedule"):
+            out.append({"workflow": f"role-{role['role']}.yml", "cron": run["schedule"], "inputs": {"clock": "true"}})
+    for entry in s.clock:
+        if not isinstance(entry, dict) or not entry.get("workflow") or not entry.get("cron"):
+            raise PolicyError("config.yaml clock: every entry needs a workflow and a cron")
+        out.append({"workflow": entry["workflow"], "cron": entry["cron"], "inputs": {"clock": "true", **(entry.get("inputs") or {})}})
+    out.sort(key=lambda e: e["workflow"])
+    return {
+        "_comment": f"GENERATED by {s.repo} with lunareng/airlock-actions/generate. Read by {s.reader}; "
+                    "cron fields are UTC, 5-field (minute hour day-of-month month day-of-week; *, n, a-b, a,b and */n).",
+        "repo": s.repo,
+        "ref": "main",
+        "schedules": out,
+    }
+
+
+def render(root: Path, s: Settings) -> dict[Path, str]:
+    out: dict[Path, str] = {}
+    roles = read_roles(root)
+    for role in roles:
+        if not on_airlock(role):
+            out[s.paths["apps"] / role["role"] / "github-app.json"] = json.dumps(github_app(s, role, roles), indent=2) + "\n"
+        if is_agent(role) and role.get("run"):
+            if not (role["run"] or {}).get("schedule"):
+                raise PolicyError(f"roles/{role['role']}/role.yaml: run.schedule is missing")
+            out[root / ".github" / "workflows" / f"role-{role['role']}.yml"] = role_workflow(s, role)
+    for path in sorted((root / "repos").glob("*.yaml")):
+        name = path.stem
+        if not NAME.match(name):
+            raise PolicyError(f"repos/{path.name}: not a repository name")
+        doc = load(path)
+        out[s.paths["codeowners"] / f"{name}.CODEOWNERS"] = codeowners(s, doc, name)
+        out[s.paths["branch_protection"] / f"{name}.json"] = json.dumps(protection(s, doc, name), indent=2) + "\n"
+    out[s.paths["schedules"]] = json.dumps(schedules(s, roles), indent=2) + "\n"
+    return out
+
+
+def leftovers(root: Path, s: Settings, files: dict[Path, str]) -> list[Path]:
+    """Generated files nothing produces any more: a role that moved onto Airlock keeps no github-app.json, a removed
+    repo keeps no CODEOWNERS, a removed role keeps no workflow. A hand-written workflow (no GENERATED line) is never one."""
+    found = list(s.paths["apps"].glob("*/github-app.json"))
+    found += s.paths["codeowners"].glob("*.CODEOWNERS")
+    found += s.paths["branch_protection"].glob("*.json")
+    for wf in (root / ".github" / "workflows").glob("role-*.yml"):
+        if wf.read_text().startswith(f"# GENERATED by {s.repo} from roles/"):
+            found.append(wf)
+    return sorted(p for p in set(found) if p not in files)
+
+
+def policy_repo(root: Path, given: str | None) -> str:
+    if given:
+        return given
+    if os.environ.get("GITHUB_REPOSITORY"):
+        return os.environ["GITHUB_REPOSITORY"]
+    try:
+        url = subprocess.run(["git", "-C", str(root), "remote", "get-url", "origin"], capture_output=True, text=True, check=True).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        raise PolicyError("no --repo, no GITHUB_REPOSITORY, and the checkout has no origin remote")
+    m = re.search(r"github\.com[:/]([^/]+/[^/]+?)(\.git)?$", url)
+    if not m:
+        raise PolicyError(f"origin {url!r} is not a GitHub repository; pass --repo")
+    return m.group(1)
+
+
+def main(argv: list[str]) -> int:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
+    ap.add_argument("--policy", default=".", help="the policy repo checkout (default: the current directory)")
+    ap.add_argument("--repo", help="the policy repo's full name, owner/name")
+    mode = ap.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--check", action="store_true")
+    mode.add_argument("--write", action="store_true")
+    args = ap.parse_args(argv)
+    root = Path(args.policy).resolve()
+    try:
+        s = Settings(root, policy_repo(root, args.repo))
+        files = render(root, s)
+        extra = leftovers(root, s, files)
+    except (PolicyError, KeyError, TypeError, yaml.YAMLError) as e:
+        print(f"::error title=airlock generate::{e}")
+        return 1
+    if args.check:
+        stale = sorted(p for p, body in files.items() if not p.is_file() or p.read_text() != body) + extra
+        for p in stale:
+            rel = p.relative_to(root)
+            print(f"::error file={rel},title=airlock generate::{rel} is stale: run lunareng/airlock-actions/generate with mode write")
+        print(f"{'FAIL' if stale else 'OK'}: {len(stale)} stale file(s) of {len(files)}")
+        return 1 if stale else 0
+    for p in extra:
+        p.unlink()
+    for p, body in files.items():
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(body)
+    print(f"wrote {len(files)} files, removed {len(extra)}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -1,0 +1,11 @@
+schema: 1
+repo: acme/web
+owner_role: builder
+default: L2
+paths:
+  - glob: "src/auth/**"
+    level: L1
+    why: Sign-in.
+  - glob: "src/copy/**"
+    level: L2
+    why: Same as the default, so no line of its own.

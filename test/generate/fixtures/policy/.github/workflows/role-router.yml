@@ -1,0 +1,8 @@
+# The router: hand-written, not generated.
+name: role router
+on: workflow_dispatch
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo route
