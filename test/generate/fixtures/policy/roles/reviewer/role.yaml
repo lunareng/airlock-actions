@@ -1,0 +1,14 @@
+schema: 1
+role: reviewer
+level: L3
+brief: roles/reviewer/BRIEF.md
+identity:
+  github_login: "acme-builders[bot]"
+  key_store: "ssm:/acme/builders"
+writes:
+  repos: [acme/docs]
+  issues: [comment]
+  reads: [actions]
+run:
+  model: claude-sonnet-5-5
+  schedule: "30 8 * * 1"

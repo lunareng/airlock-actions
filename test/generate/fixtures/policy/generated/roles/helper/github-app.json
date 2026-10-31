@@ -1,0 +1,16 @@
+{
+  "name": "acme-helper",
+  "shared_by": [
+    "helper"
+  ],
+  "repositories": [
+    "acme/api"
+  ],
+  "permissions": {
+    "metadata": "read",
+    "contents": "read",
+    "issues": "read",
+    "pull_requests": "read"
+  },
+  "note": "Install on exactly these repositories. The app's login is <name>[bot]; put it in identity.github_login."
+}

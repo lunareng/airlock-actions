@@ -1,0 +1,15 @@
+schema: 1
+repo: acme/api
+owner_role: builder
+default: L3
+actions:
+  send: L2
+  delete_data: L1
+paths:
+  - glob: "src/billing/**"
+    level: L1
+    why: Billing moves money.
+  - glob: "migrations/**"
+    level: L2
+  - glob: "docs/**"
+    level: L4

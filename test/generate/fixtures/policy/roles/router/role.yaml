@@ -1,0 +1,10 @@
+schema: 1
+role: router
+kind: workflow
+level: L4
+brief: roles/router/BRIEF.md
+identity:
+  key_store: "airlock"
+writes:
+  repos: [acme/api]
+  issues: [comment, label]

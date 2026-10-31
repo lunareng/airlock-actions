@@ -1,0 +1,6 @@
+schema: 1
+role: helper
+level: L3
+brief: roles/helper/BRIEF.md
+writes:
+  repos: [acme/api]

@@ -1,0 +1,14 @@
+schema: 1
+role: builder
+level: L3
+brief: roles/builder/BRIEF.md
+identity:
+  github_login: "acme-builders[bot]"
+  key_store: "ssm:/acme/builders"
+writes:
+  repos: [acme/api, acme/web]
+  pull_requests: [open]
+  workflows: true
+run:
+  model: claude-sonnet-5-5
+  schedule: "0 */6 * * *"

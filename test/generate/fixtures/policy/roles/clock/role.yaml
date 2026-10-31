@@ -1,0 +1,10 @@
+schema: 1
+role: clock
+kind: workflow
+level: L3
+brief: roles/clock/BRIEF.md
+identity:
+  github_login: "acme-clock[bot]"
+writes:
+  repos: [acme/policy]
+  dispatch: true

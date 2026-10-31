@@ -1,0 +1,21 @@
+{
+  "name": "acme-builders",
+  "shared_by": [
+    "builder",
+    "reviewer"
+  ],
+  "repositories": [
+    "acme/api",
+    "acme/docs",
+    "acme/web"
+  ],
+  "permissions": {
+    "metadata": "read",
+    "contents": "write",
+    "issues": "write",
+    "pull_requests": "write",
+    "workflows": "write",
+    "actions": "read"
+  },
+  "note": "Install on exactly these repositories. The app's login is <name>[bot]; put it in identity.github_login."
+}
