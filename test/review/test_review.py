@@ -111,4 +111,48 @@ for action in (REVIEW, SECURITY):
         assert "${{" not in s.get("run", ""), f"{s.get('name') or s.get('id')}: an expression in a script is an injection; pass it in env"
 print("ok  every action pinned, no expression in a script")
 
+# The retry (lunareng/autonomy#204): the prompt is built once, by step `prompt`, and is the old inline prompt exactly;
+# step `posted` says whether the review posted a verdict for this head; a second attempt runs only when it didn't.
+OLD = yaml.safe_load((Path(__file__).resolve().parent / "fixtures" / "action-before-retry.yml").read_text())
+old_prompt = next(st for st in OLD["runs"]["steps"] if "claude-code-action" in str(st.get("uses")))["with"]["prompt"]
+vals = {"${{ inputs.human-owner }}": "the human owner", "${{ github.event.pull_request.number }}": "7",
+        "${{ github.repository }}": "acme/api", "${{ github.event.pull_request.head.sha }}": SHA}
+for k, v in vals.items():
+    old_prompt = old_prompt.replace(k, v)
+STEPS = {st.get("id"): st for st in REVIEW["runs"]["steps"]}
+with tempfile.TemporaryDirectory() as d:
+    out = Path(d, "out")
+    r = subprocess.run(["bash", "-e", "-c", STEPS["prompt"]["run"]], capture_output=True, text=True,
+                       env={**os.environ, "PATH": f"{Path(sys.executable).parent}:{os.environ['PATH']}", "GITHUB_OUTPUT": str(out),
+                            "HUMAN": "the human owner", "NUMBER": "7", "REPO": "acme/api", "SHA": SHA})
+    assert r.returncode == 0, r.stderr
+    text = out.read_text()
+    eof = text.split("<<", 1)[1].split("\n", 1)[0]
+    built = text.split("\n", 1)[1].rsplit("\n" + eof, 1)[0]
+import difflib; assert built == old_prompt.rstrip("\n"), "\n".join(list(difflib.unified_diff(old_prompt.rstrip("\n").split("\n"), built.split("\n"), lineterm=""))[:12])
+assert STEPS["review"]["with"]["prompt"] == STEPS["review-again"]["with"]["prompt"] == "${{ steps.prompt.outputs.text }}"
+assert "steps.posted.outputs.found == 'false'" in STEPS["review-again"]["if"]
+print("ok  the prompt is built once and is the old prompt exactly; the second attempt runs only without a verdict")
+
+
+def posted(comments):
+    bin_dir = tempfile.mkdtemp()
+    Path(bin_dir, "gh").write_text(GH)
+    os.chmod(Path(bin_dir, "gh"), 0o755)
+    canned = Path(bin_dir, "canned.json")
+    canned.write_text(json.dumps({"reviews": [], "comments": comments}))
+    out = Path(bin_dir, "out")
+    subprocess.run(["bash", "-e", "-o", "pipefail", "-c", STEPS["posted"]["run"]], check=True, capture_output=True, text=True,
+                   env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "CANNED": str(canned), "GITHUB_OUTPUT": str(out),
+                        "GH_TOKEN": "x", "REPO": "acme/api", "PR": "7", "SHA": SHA})
+    return out.read_text().strip()
+
+
+assert posted([claude(f"fine\nVerdict: PASS ({SHA})")]) == "found=true"
+assert posted([claude(f"Verdict: FAIL ({SHA})")]) == "found=true"
+assert posted([]) == "found=false"
+assert posted([claude(f"Verdict: PASS ({'b' * 40})")]) == "found=false", "a verdict on another head doesn't count"
+assert posted([{"user": {"login": "someone"}, "body": f"Verdict: PASS ({SHA})"}]) == "found=false"
+print("ok  posted finds the reviewer's verdict for this head, and only that")
+
 print("OK: 0 failing case(s)")
