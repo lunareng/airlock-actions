@@ -172,8 +172,8 @@ jobs:
       - name: airlock (this run's GitHub token, MCP sessions and telemetry)
         id: app
         timeout-minutes: 2
-        # v1.0.0, which doesn't take reason or clock yet (it warns and sends neither). This repository merges by
-        # rebase, so a PR can't pin its own commit: a one-line follow-up re-pins this to the commit that added them.
+        # Main at #31, the first commit that sends reason and clock to Mint. It isn't a release: re-pin to the v1.x
+        # tag that contains #31 once one is cut.
         uses: lunareng/airlock-actions@1f194ec42f460efcd4408a0362ce8ab484c989cf # main at lunareng/airlock-actions#31
         with:
           role: ${{ inputs.role }}
