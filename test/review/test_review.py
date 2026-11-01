@@ -22,6 +22,10 @@ SHA = "a" * 40
 GH = """#!/usr/bin/env python3
 import json, os, subprocess, sys
 args = sys.argv[1:]
+if args[:2] == ["pr", "comment"]:
+    with open(os.environ["POSTED"], "a") as f:
+        f.write(sys.stdin.read() + "\\n---\\n")
+    sys.exit(0)
 path = next(a for a in args if a.startswith("repos/"))
 expr = args[args.index("--jq") + 1]
 kind = "reviews" if "/reviews" in path else "comments"
@@ -59,8 +63,10 @@ def verdict(author: str, reviews=(), comments=(), workflow_change=False, agents=
     canned.write_text(json.dumps({"reviews": list(reviews), "comments": list(comments)}))
     env = {**os.environ, "PATH": f"{bin_dir}:{Path(sys.executable).parent}:{os.environ['PATH']}", "CANNED": str(canned),
            "GH_TOKEN": "x", "ONLY_DOCS": "false", "BASE_REF": "main", "AUTHOR": author, "REPO": "acme/api", "PR": "7",
-           "SHA": SHA, "AGENTS": agents}
-    return subprocess.run(["bash", "-e", "-c", VERDICT], cwd=d, env=env, capture_output=True, text=True)
+           "SHA": SHA, "AGENTS": agents, "POSTED": str(Path(bin_dir, "posted"))}
+    r = subprocess.run(["bash", "-e", "-c", VERDICT], cwd=d, env=env, capture_output=True, text=True)
+    r.posted = Path(bin_dir, "posted").read_text() if Path(bin_dir, "posted").exists() else ""
+    return r
 
 
 claude = lambda body: {"user": {"login": "claude[bot]"}, "body": body}  # noqa: E731
@@ -154,5 +160,29 @@ assert posted([]) == "found=false"
 assert posted([claude(f"Verdict: PASS ({'b' * 40})")]) == "found=false", "a verdict on another head doesn't count"
 assert posted([{"user": {"login": "someone"}, "body": f"Verdict: PASS ({SHA})"}]) == "found=false"
 print("ok  posted finds the reviewer's verdict for this head, and only that")
+
+# No verdict says why on the PR, once per commit (airlock#115 and autonomy#205 went green with no comment at all).
+MARK = f"<!-- claude-review: no verdict on {SHA} -->"
+r = verdict("matthew", workflow_change=True)
+assert r.returncode == 0 and "changes a file under `.github/workflows/`" in r.posted and MARK in r.posted, r.posted + r.stderr
+assert "person who merges it is its reviewer" in r.posted
+r = verdict("matthew", workflow_change=True, comments=[{"user": {"login": "github-actions[bot]"}, "body": f"earlier\n\n{MARK}"}])
+assert r.returncode == 0 and r.posted == "", "the note is posted once per commit"
+r = verdict("acme-airlock[bot]", workflow_change=True)
+assert r.returncode == 1 and "approves this commit" in r.posted, r.posted
+r = verdict("acme-airlock[bot]", workflow_change=True, reviews=[approval("matthew")])
+assert r.returncode == 0 and r.posted == "", "an approved workflow change needs no note"
+r = verdict("matthew")
+assert r.returncode == 0 and "ran twice on this commit" in r.posted and MARK in r.posted, r.posted
+r = verdict("matthew", comments=[claude(f"Verdict: FAIL ({SHA})")])
+assert r.returncode == 0 and r.posted == "", "a FAIL is a verdict: no note"
+r = verdict("matthew", comments=[claude(f"Verdict: PASS ({SHA})")])
+assert r.posted == ""
+r = verdict("acme-airlock[bot]", comments=[claude(f"Verdict: PASS ({SHA})")])
+assert r.returncode == 0 and r.posted == ""
+STEPS = {st.get("id"): st for st in REVIEW["runs"]["steps"]}
+for sid in ("prompt", "review", "posted", "review-again"):
+    assert "steps.docs.outputs.workflows != 'true'" in STEPS[sid]["if"], f"{sid} must not run on a workflow PR"
+print("ok  no verdict is explained on the PR once per commit; a workflow PR skips both review attempts")
 
 print("OK: 0 failing case(s)")
