@@ -7,14 +7,16 @@
       "workflow": "role-builder.yml",
       "cron": "0 */6 * * *",
       "inputs": {
-        "clock": "true"
+        "clock": "true",
+        "reason": "schedule 0 */6 * * *"
       }
     },
     {
       "workflow": "role-reviewer.yml",
       "cron": "30 8 * * 1",
       "inputs": {
-        "clock": "true"
+        "clock": "true",
+        "reason": "schedule 30 8 * * 1"
       }
     },
     {
@@ -29,7 +31,8 @@
       "workflow": "role-triage.yml",
       "cron": "15 9 * * 1-5",
       "inputs": {
-        "clock": "true"
+        "clock": "true",
+        "reason": "schedule 15 9 * * 1-5"
       }
     },
     {
@@ -37,7 +40,8 @@
       "cron": "0 14 * * 3",
       "inputs": {
         "clock": "true",
-        "signal": "routine:weekly"
+        "signal": "routine:weekly",
+        "reason": "routine:weekly"
       }
     }
   ]

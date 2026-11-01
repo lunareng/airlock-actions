@@ -17,6 +17,14 @@ inputs:
     description: "What the run was dispatched for: an issue or pull request URL in your organization. Recorded for the run's report; empty sends none."
     required: false
     default: ""
+  reason:
+    description: "Why the run was started, as its dispatcher says: the clock's `schedule <cron>` or `routine:<name>`, the router's rule and target (`review on acme/api#12`). Recorded as the run's own account, never as proof; one over 120 characters is not sent."
+    required: false
+    default: ""
+  clock:
+    description: "\"true\" when the clock started the run (a scheduled run). Recorded as the run's own account."
+    required: false
+    default: "false"
   airlock-url:
     description: "Airlock's origin. Also the audience of the OIDC token the action requests."
     required: false

@@ -3,7 +3,8 @@
 # repositories, model, turns, tools and minutes) and gets the run's token, MCP sessions and telemetry from Airlock.
 # Its timer is acme's clock (generated/schedules.json: "15 9 * * 1-5"), which dispatches with
 # clock=true; those runs are off until the repository variable AGENTS_ENABLED is "true". A dispatch without clock
-# (the router, a person) runs once.
+# (the router, a person) runs once. `reason` is why it was started (the clock's schedule or routine, the router's
+# rule), which Airlock records as the run's own account.
 name: role triage
 on:
   workflow_dispatch:
@@ -16,6 +17,10 @@ on:
         description: "set by the clock: a scheduled run, subject to AGENTS_ENABLED"
         type: boolean
         default: false
+      reason:
+        description: "why it was started, for the run's record (the clock and router set it)"
+        type: string
+        default: ""
 permissions:
   contents: read
   id-token: write   # a GitHub OIDC token for Airlock: proof of this run, no repo access
@@ -29,6 +34,8 @@ jobs:
     with:
       role: triage
       signal: ${{ inputs.signal }}
+      reason: ${{ inputs.reason }}
+      clock: ${{ inputs.clock }}
       runner: acme-agents
       git-email-domain: acme.example
     secrets:

@@ -9,6 +9,12 @@ const stop = (line) => { annotate('error', line); process.exit(1); };
 
 const role = input('role');
 const dispatched = input('signal');
+// Why it was started, as its dispatcher said (the clock's schedule or routine, the router's rule and target). Airlock
+// records it as the run's own account; one longer than Mint keeps (120 characters) isn't sent, so it can never push
+// the request past Mint's size limit.
+const why = input('reason').trim();
+const reason = why && why.length <= 120 ? why : '';
+const clock = input('clock').trim().toLowerCase() === 'true';
 const origin = airlockOrigin(input('airlock-url') || DEFAULT_AIRLOCK);
 if (!role) stop('Airlock: the role input is empty');
 if (!origin) stop('Airlock: airlock-url must be an https origin, like https://airlock.lunareng.com');
@@ -20,7 +26,7 @@ let answer;
 try {
   const proof = await oidc(origin, signal);
   if (!proof) stop('Airlock: no OIDC token for this job (add permissions: id-token: write)');
-  answer = await call(origin, '/v1/mint', proof, { role, ...(dispatched ? { signal: dispatched } : {}) }, signal);
+  answer = await call(origin, '/v1/mint', proof, { role, ...(dispatched ? { signal: dispatched } : {}), ...(reason ? { reason } : {}), ...(clock ? { clock: true } : {}) }, signal);
 } catch (err) {
   stop(`Airlock: unreachable (${err?.name ?? 'Error'}); no token`);
 }
