@@ -38,6 +38,8 @@ runs:
   # A person's PR that only changes Markdown (a GOALS.md line, a README) is direction, not code: the person merging it
   # is its reviewer, and the model is not spent on it (Matthew, 2026-10-22). An agent's docs PR is still reviewed: a
   # goal an agent proposes is exactly what the charter's checks are for.
+  # A PR that changes a workflow is never reviewed by claude-code-action (see the verdict step), so neither attempt
+  # below runs on one: `workflows` skips them, and the verdict step says so on the PR.
   - id: docs
     env:
       AUTHOR: ${{ github.event.pull_request.user.login }}
@@ -48,11 +50,12 @@ runs:
       else
         echo "only=false" >> "$GITHUB_OUTPUT"
       fi
+      if git diff --quiet "origin/$BASE_REF" -- .github/workflows/; then echo "workflows=false" >> "$GITHUB_OUTPUT"; else echo "workflows=true" >> "$GITHUB_OUTPUT"; fi
     shell: bash
   # The reviewer's prompt, built once from the PR's values (passed through env, never expanded in a script) so both
   # attempts below read the same text.
   - id: prompt
-    if: github.event_name == 'pull_request' && steps.docs.outputs.only != 'true'
+    if: github.event_name == 'pull_request' && steps.docs.outputs.only != 'true' && steps.docs.outputs.workflows != 'true'
     shell: bash
     env:
       HUMAN: ${{ inputs.human-owner }}
@@ -85,7 +88,7 @@ runs:
           f.write(f"text<<{eof}\n{text}\n{eof}\n")
       PY
   - id: review
-    if: github.event_name == 'pull_request' && steps.docs.outputs.only != 'true'
+    if: github.event_name == 'pull_request' && steps.docs.outputs.only != 'true' && steps.docs.outputs.workflows != 'true'
     uses: anthropics/claude-code-action@aa8a7738e48bf30a40ee499ce818bef081c5ab5e # v1.0.257
     with:
       claude_code_oauth_token: ${{ inputs.claude-code-oauth-token }}
@@ -99,7 +102,7 @@ runs:
   # Did it post a verdict for this head? Twice on lunareng/airlock it finished green without one, and a re-run fixed it
   # (lunareng/autonomy#204), so it gets one more attempt before the verdict step decides.
   - id: posted
-    if: github.event_name == 'pull_request' && steps.docs.outputs.only != 'true'
+    if: github.event_name == 'pull_request' && steps.docs.outputs.only != 'true' && steps.docs.outputs.workflows != 'true'
     shell: bash
     env:
       GH_TOKEN: ${{ github.token }}
@@ -110,7 +113,7 @@ runs:
       n="$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" --jq '.[] | select(.user.login == "claude[bot]") | .body | split("\n") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0)) | last // "" | select(. == "Verdict: PASS ('"$SHA"')" or . == "Verdict: FAIL ('"$SHA"')")' | wc -l)"
       if [ "$n" -gt 0 ]; then echo "found=true" >> "$GITHUB_OUTPUT"; else echo "found=false" >> "$GITHUB_OUTPUT"; echo "::warning::the review posted no verdict for $SHA; running it once more"; fi
   - id: review-again
-    if: github.event_name == 'pull_request' && steps.docs.outputs.only != 'true' && steps.posted.outputs.found == 'false'
+    if: github.event_name == 'pull_request' && steps.docs.outputs.only != 'true' && steps.docs.outputs.workflows != 'true' && steps.posted.outputs.found == 'false'
     uses: anthropics/claude-code-action@aa8a7738e48bf30a40ee499ce818bef081c5ab5e # v1.0.257
     with:
       claude_code_oauth_token: ${{ inputs.claude-code-oauth-token }}
@@ -141,6 +144,14 @@ runs:
         [ -n "$(gh api --paginate "repos/$REPO/pulls/$PR/reviews?per_page=100" \
           --jq ".[] | select(.state == \"APPROVED\" and .commit_id == \"$SHA\" and (.user.login | endswith(\"[bot]\") | not)) | .id")" ]
       }
+      # When there is no Claude verdict, say why on the PR itself, once per commit: a notice in this log is read by
+      # nobody, and a green check with no comment looks like a review that happened.
+      say() {
+        marker="<!-- claude-review: no verdict on $SHA -->"
+        if [ -z "$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" --jq ".[] | select(.body | contains(\"$marker\")) | .id")" ]; then
+          printf '%s\n\n%s\n' "$1" "$marker" | gh pr comment "$PR" --repo "$REPO" --body-file - >/dev/null || echo "::warning::could not post the no-verdict note"
+        fi
+      }
       # claude-code-action's token exchange refuses a PR that changes anything under .github/workflows/, so nobody
       # can edit the reviewer's prompt, or any workflow, in a PR it reviews. Such a PR gets no Claude verdict, so a
       # person is its reviewer; the next PR is reviewed by the merged file.
@@ -150,8 +161,11 @@ runs:
         case "$AUTHOR" in
           *"[bot]")
             if approved; then echo "::notice::workflow change by an agent, approved by a person on this commit; claude-code-action skips workflow PRs"; exit 0; fi
+            say "Claude didn't review this commit ($SHA): it changes a file under \`.github/workflows/\`, and Claude's reviewer never runs on a PR that changes a workflow. It can merge only after a person reviews it and approves this commit."
             echo "::error::this PR changes a workflow, which claude-code-action does not review; an agent's workflow change needs a person's approving review on its current commit"; exit 1 ;;
-          *) echo "::notice::this PR changes a workflow, so claude-code-action skipped it; the person merging it is its reviewer"; exit 0 ;;
+          *)
+            say "Claude didn't review this commit ($SHA): it changes a file under \`.github/workflows/\`, and Claude's reviewer never runs on a PR that changes a workflow. The person who merges it is its reviewer."
+            echo "::notice::this PR changes a workflow, so claude-code-action skipped it; the person merging it is its reviewer"; exit 0 ;;
         esac
       fi
       # Only the reviewer's own comments count (claude-code-action posts as claude[bot]), and only a verdict on
@@ -170,6 +184,8 @@ runs:
         $agents)
           if approved; then echo "::notice::$result, and a person approved this commit: they took it from here"; exit 0; fi
           echo "::error::$result: an agent's PR merges only on PASS or a person's approving review on this commit"; exit 1 ;;
-        *) echo "::warning::$result; this PR is not an agent's, so the person merging it is its reviewer"; exit 0 ;;
+        *)
+          if [ -z "$verdict" ]; then say "Claude's review ran twice on this commit ($SHA) and posted no verdict. Re-run the claude-review job to try again; until then, the person who merges this PR is its reviewer."; fi
+          echo "::warning::$result; this PR is not an agent's, so the person merging it is its reviewer"; exit 0 ;;
       esac
     shell: bash
