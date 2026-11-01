@@ -248,6 +248,15 @@ test('signal: what the run was dispatched for goes to Mint with the role; an emp
   assert.deepEqual(to(main(live(), { INPUT_SIGNAL: '' }), '/v1/mint')[0].body, { role: 'triage' });
 });
 
+test('reason and clock: why the run was started goes to Mint with the role; empty, too long or not "true" sends none', () => {
+  const body = (env) => to(main(live(), env), '/v1/mint')[0].body;
+  assert.deepEqual(body({ INPUT_REASON: 'schedule 7 11 * * 1-5', INPUT_CLOCK: 'true' }), { role: 'triage', reason: 'schedule 7 11 * * 1-5', clock: true });
+  assert.deepEqual(body({ INPUT_REASON: '  review on acme/api#12 ', INPUT_CLOCK: 'false' }), { role: 'triage', reason: 'review on acme/api#12' });
+  assert.deepEqual(body({ INPUT_REASON: 'x'.repeat(120) }), { role: 'triage', reason: 'x'.repeat(120) });
+  assert.deepEqual(body({ INPUT_REASON: 'x'.repeat(121), INPUT_CLOCK: 'yes' }), { role: 'triage' });
+  assert.deepEqual(body({ INPUT_REASON: '', INPUT_CLOCK: '' }), { role: 'triage' });
+});
+
 // Mint's answer when the tenant sends role runs' telemetry to Airlock (lunareng/airlock functions/mint, telemetryEnv).
 const TELEMETRY_TOKEN = 'eyJtelemetry.TESTONLY.session0123456789';
 const TELEMETRY_ENV = {
@@ -416,7 +425,7 @@ test('action.yml: the post step runs on success, failure and cancel, on the Node
 });
 
 test('action.yml declares exactly the inputs the steps read and the outputs the main step writes', () => {
-  assert.deepEqual(section('inputs'), ['role', 'signal', 'airlock-url']);
+  assert.deepEqual(section('inputs'), ['role', 'signal', 'reason', 'clock', 'airlock-url']);
   assert.deepEqual(section('outputs'), Object.keys(main(withRead()).output));
   assert.match(yml, /^ {4}default: https:\/\/airlock\.lunareng\.com$/m);
 });

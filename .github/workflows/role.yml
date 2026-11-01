@@ -11,10 +11,14 @@
 #       with:
 #         role: triage
 #         signal: ${{ inputs.signal }}
+#         reason: ${{ inputs.reason }}
+#         clock: ${{ inputs.clock }}
 #       secrets:
 #         CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 #
-# The caller's job needs permissions contents: read and id-token: write.
+# The caller's job needs permissions contents: read and id-token: write. `reason` and `clock` say why the run was
+# started (the clock's `schedule <cron>` or `routine:<name>`, the router's rule and target); Airlock records them on
+# the run as the run's own account, never as proof, and never refuses a run over them.
 name: role
 on:
   workflow_call:
@@ -27,6 +31,14 @@ on:
         description: a signal URL for the run to lead with (optional)
         type: string
         default: ""
+      reason:
+        description: why the run was started, as its dispatcher says, for the run's record at Airlock (optional)
+        type: string
+        default: ""
+      clock:
+        description: true when the clock started the run (a scheduled run)
+        type: boolean
+        default: false
       runner:
         description: the runner label the run's jobs use
         type: string
@@ -160,10 +172,14 @@ jobs:
       - name: airlock (this run's GitHub token, MCP sessions and telemetry)
         id: app
         timeout-minutes: 2
+        # v1.0.0, which doesn't take reason or clock yet (it warns and sends neither). This repository merges by
+        # rebase, so a PR can't pin its own commit: a one-line follow-up re-pins this to the commit that added them.
         uses: lunareng/airlock-actions@498bb0a7767c94f11ccfb93e0885bad19995f6cd # v1.0.0
         with:
           role: ${{ inputs.role }}
           signal: ${{ inputs.signal }}
+          reason: ${{ inputs.reason }}
+          clock: ${{ inputs.clock }}
           airlock-url: ${{ inputs.airlock-url }}
       - name: no token, no run
         if: steps.app.outputs.token == ''

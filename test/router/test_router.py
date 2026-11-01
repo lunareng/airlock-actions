@@ -81,9 +81,15 @@ assert owner_role("acme/marketing", REPOS) == "web-engineer"
 assert owner_role("acme/policy", REPOS) == "policy-engineer", "the control repo's requests dispatch the policy-engineer (autonomy#106)"
 assert owner_role("acme/legacy", REPOS) is None, "a repo with no engineer role holds the request for a person"
 assert dispatch_plan("acme/legacy", {"html_url": "u"}, REPOS) is None
-d = dispatch_plan("acme/cli", {"html_url": "u"}, REPOS)
-assert d == {"workflow": "role-cli-engineer.yml", "inputs": {"signal": "u"}, "role": "cli-engineer"}, d
+d = dispatch_plan("acme/cli", {"html_url": "u", "number": 5}, REPOS)
+assert d == {"workflow": "role-cli-engineer.yml", "inputs": {"signal": "u", "reason": "tool-request on acme/cli#5"}, "role": "cli-engineer"}, d
 print("ok  tool-request dispatch")
+
+from router import dispatch_inputs  # noqa: E402
+
+assert dispatch_inputs("https://github.com/acme/api/pull/7", "review", "acme/api", 7) == {"signal": "https://github.com/acme/api/pull/7", "reason": "review on acme/api#7"}
+assert dispatch_inputs("u", "pr slot freed", "acme/cli", 5)["reason"] == "pr slot freed on acme/cli#5"
+print("ok  every role dispatch says why: the rule and its target")
 
 from router import review_plan  # noqa: E402
 
@@ -621,6 +627,9 @@ assert "acme/cli#5 tool_request" in _rep["routed"] and "acme/cli#5 -> cli-engine
 assert "acme/api#9 product_bug" in _rep["routed"] and "policy#40 digest answers -> clerk" in _rep["dispatched"], _rep
 assert any(w.startswith("POST repos/acme/policy/actions/workflows/role-cli-engineer.yml/dispatches") for w in _writes), _writes
 assert any(w.startswith("POST repos/acme/policy/actions/workflows/role-clerk.yml/dispatches") for w in _writes), _writes
+# Each role dispatch says why, for the run's record at Airlock: the rule and its target, beside the signal.
+assert any(w.startswith("POST repos/acme/policy/actions/workflows/role-cli-engineer.yml/dispatches") and '"reason": "tool-request on acme/cli#5"' in w and '"signal": "https://github.com/acme/cli/issues/5"' in w for w in _writes), _writes
+assert any(w.startswith("POST repos/acme/policy/actions/workflows/role-clerk.yml/dispatches") and '"reason": "digest answer on acme/po' in w for w in _writes), "the report cuts each write at 120 characters"
 assert any(w.startswith("POST repos/acme/web/issues ") for w in _writes), "the failing CI run on main gets its issue"
 assert any(w.startswith("PATCH repos/acme/api/issues/9") and "Sim incident sim-shop#3" in w for w in _writes), _writes
 assert all(w.split()[1].startswith("repos/acme/") for w in _writes), _writes

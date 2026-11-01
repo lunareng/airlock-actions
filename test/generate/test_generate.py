@@ -131,7 +131,8 @@ def _():
     w = yaml.safe_load((FIXTURE / ".github/workflows/role-triage.yml").read_text())
     job = w["jobs"]["run"]
     assert job["uses"] == "lunareng/airlock-actions/.github/workflows/role.yml@0123456789abcdef0123456789abcdef01234567", job
-    assert job["with"] == {"role": "triage", "signal": "${{ inputs.signal }}", "runner": "acme-agents", "git-email-domain": "acme.example"}
+    assert job["with"] == {"role": "triage", "signal": "${{ inputs.signal }}", "reason": "${{ inputs.reason }}", "clock": "${{ inputs.clock }}", "runner": "acme-agents", "git-email-domain": "acme.example"}
+    assert w[True]["workflow_dispatch"]["inputs"]["reason"] == {"description": "why it was started, for the run's record (the clock and router set it)", "type": "string", "default": ""}
     assert w["permissions"] == {"contents": "read", "id-token": "write"}
     assert job["secrets"] == {"CLAUDE_CODE_OAUTH_TOKEN": "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}"}
     assert "schedule" not in w[True], "the clock is the only timer: no workflow has a schedule trigger"
@@ -144,7 +145,7 @@ def _():
     set_config(d, lambda c: c.pop("role_runs"))
     gen(d, "--write")
     w = yaml.safe_load((d / ".github/workflows/role-triage.yml").read_text())
-    assert w["jobs"]["run"]["with"] == {"role": "triage", "signal": "${{ inputs.signal }}"}, w["jobs"]["run"]
+    assert w["jobs"]["run"]["with"] == {"role": "triage", "signal": "${{ inputs.signal }}", "reason": "${{ inputs.reason }}", "clock": "${{ inputs.clock }}"}, w["jobs"]["run"]
 
 
 @case("schedules.json: every agent role's run.schedule and every clock entry, clock=true, sorted by workflow")
@@ -153,7 +154,10 @@ def _():
     assert s["repo"] == "acme/policy" and s["ref"] == "main"
     assert [e["workflow"] for e in s["schedules"]] == ["role-builder.yml", "role-reviewer.yml", "role-router.yml", "role-triage.yml", "role-triage.yml"]
     assert all(e["inputs"]["clock"] == "true" for e in s["schedules"])
-    assert {"workflow": "role-triage.yml", "cron": "0 14 * * 3", "inputs": {"clock": "true", "signal": "routine:weekly"}} in s["schedules"]
+    assert {"workflow": "role-triage.yml", "cron": "0 14 * * 3", "inputs": {"clock": "true", "signal": "routine:weekly", "reason": "routine:weekly"}} in s["schedules"]
+    assert {"workflow": "role-triage.yml", "cron": "15 9 * * 1-5", "inputs": {"clock": "true", "reason": "schedule 15 9 * * 1-5"}} in s["schedules"]
+    # The router's workflow is hand-written and declares no `reason`: a dispatch carrying one would be refused.
+    assert {"workflow": "role-router.yml", "cron": "*/30 * * * *", "inputs": {"clock": "true", "dry_run": "false"}} in s["schedules"]
 
 
 @case("output paths come from config.yaml generated; the schedules path is kept as configured")
@@ -214,6 +218,8 @@ def _():
         ("clock", lambda c: c.update(clock=[{"workflow": "x.yml"}])),
         ("clock", lambda c: c["clock"][0]["inputs"].update(clock="false")),
         ("clock", lambda c: c["clock"][0]["inputs"].update(CLOCK="false")),
+        ("clock", lambda c: c["clock"][1]["inputs"].update(reason="made up")),
+        ("clock", lambda c: c["clock"][1]["inputs"].update(Reason="made up")),
         ("clock", lambda c: c["clock"][0].update(cron="*/30 * * * *\n")),
         ("clock", lambda c: c["clock"][0].update(workflow="role-router.yml\n")),
         ("strict", lambda c: c.update(strict=["web\r"])),

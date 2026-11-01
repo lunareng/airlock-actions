@@ -43,6 +43,8 @@ jobs:
 | --- | --- | --- | --- |
 | `role` | Yes | | The role this run is: the `{role}` in `roles/{role}/role.yaml` and `.github/workflows/role-{role}.yml`. |
 | `signal` | No | | What the run was dispatched for: an issue or pull request URL in your organization. Recorded for the run's report. |
+| `reason` | No | | Why the run was started, as its dispatcher says: `schedule <cron>`, `routine:<name>`, or the router's rule and target (`review on acme/api#12`). Airlock records it as the run's own account, never as proof. One over 120 characters isn't sent. |
+| `clock` | No | `false` | `true` when the clock started the run. Recorded the same way. |
 | `airlock-url` | No | `https://airlock.lunareng.com` | Airlock's origin, and the audience of the OIDC token the action requests. |
 
 | Output | What it is |
@@ -135,6 +137,12 @@ on:
       signal:
         type: string
         default: ""
+      reason:
+        type: string
+        default: ""
+      clock:
+        type: boolean
+        default: false
 permissions:
   contents: read
   id-token: write
@@ -146,6 +154,8 @@ jobs:
     with:
       role: triage
       signal: ${{ inputs.signal }}
+      reason: ${{ inputs.reason }}
+      clock: ${{ inputs.clock }}
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 ```
@@ -156,6 +166,8 @@ The file must be `.github/workflows/role-<role>.yml` on your policy repo's defau
 | --- | --- | --- |
 | `role` | | The role's name. |
 | `signal` | `""` | A signal URL for the run to lead with. |
+| `reason` | `""` | Why the run was started (the clock and the router set it), for the run's record at Airlock. |
+| `clock` | `false` | `true` when the clock started the run. |
 | `runner` | `ubuntu-latest` | The runner label for the run's jobs. |
 | `airlock-url` | `https://airlock.lunareng.com` | Airlock's origin. |
 | `git-email-domain` | `users.noreply.github.com` | Commits are by `<role>@<domain>`. |

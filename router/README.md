@@ -14,6 +14,9 @@ the role that owns the work is started with the signal:
 | `delivered` | A merged PR whose `## Signal` names an open `tool-request` without `Closes` gets one comment (and `delivered?` when it named no keyword). |
 | `run_failed` | A failing role workflow (`role-*.yml`) gets one `Role run: <role> failing` issue, a comment per further failure, the human owner mentioned at the third in a row; closed on the next success. |
 | `override` | A PR merged over a FAIL `claude-review` verdict gets one comment asking whoever merged it for `Override: <one line>`. |
+
+Every role dispatch also sends `reason`, the rule and its target, which Airlock records as why the run was started:
+`tool-request on acme/cli#5`, `review on acme/api#12`, `pr slot freed on acme/cli#5`, `digest answer on acme/policy#40`.
 | `gate_rerun` | A commit on the policy repo's main that changes what the gate scores by re-runs `autonomy-gate` on the open PRs it touches. |
 
 It writes nothing but issues, labels, comments, role dispatches and gate re-runs, and every rule checks GitHub

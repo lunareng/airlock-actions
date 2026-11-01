@@ -232,11 +232,17 @@ def owner_role(repo: str, repos_dir: Path | None = None) -> str | None:
     return (yaml.safe_load(f.read_text()) or {}).get("owner_role")
 
 
+def dispatch_inputs(signal: str, rule: str, repo: str, number: int) -> dict:
+    """A role dispatch's inputs: the signal it leads with, and why it was started (the rule and its target, e.g.
+    "review on acme/api#12"), which Airlock records as the run's own account."""
+    return {"signal": signal, "reason": f"{rule} on {repo}#{number}"}
+
+
 def dispatch_plan(repo: str, issue: dict, repos_dir: Path | None = None) -> dict | None:
     role = owner_role(repo, repos_dir)
     if not role:
         return None
-    return {"workflow": f"role-{role}.yml", "inputs": {"signal": issue.get("html_url", "")}, "role": role}
+    return {"workflow": f"role-{role}.yml", "inputs": dispatch_inputs(issue.get("html_url", ""), "tool-request", repo, issue["number"]), "role": role}
 
 
 def role_file(role: str, roles_dir: Path | None = None) -> dict:
@@ -1012,7 +1018,7 @@ def main() -> int:
                                gh.get(f"repos/{repo}/issues/{n}/comments", per_page=100), logins)
             if not plan:
                 continue
-            gh.write("POST", f"repos/{POLICY_REPO}/actions/workflows/role-{role}.yml/dispatches", {"ref": "main", "inputs": {"signal": plan["signal"]}})
+            gh.write("POST", f"repos/{POLICY_REPO}/actions/workflows/role-{role}.yml/dispatches", {"ref": "main", "inputs": dispatch_inputs(plan["signal"], "review", repo, n)})
             gh.write("POST", f"repos/{repo}/issues/{n}/comments", {"body": f"Review ({plan['kind']}) seen; the `{role}` role is starting on it (signal = this PR). It answers each thread, pushes, and re-requests review. {REVIEW_MARK.format(id=plan['id'])}" + FOOTER})
             report["dispatched"].append(f"{repo}#{n} review -> {role}")
             started.add(role)
@@ -1063,7 +1069,7 @@ def main() -> int:
                 if not plan:
                     continue
                 freed = ", ".join(plan["freed"])
-                gh.write("POST", f"repos/{POLICY_REPO}/actions/workflows/role-{role}.yml/dispatches", {"ref": "main", "inputs": {"signal": plan["signal"]}})
+                gh.write("POST", f"repos/{POLICY_REPO}/actions/workflows/role-{role}.yml/dispatches", {"ref": "main", "inputs": dispatch_inputs(plan["signal"], "pr slot freed", repo, n)})
                 gh.write("POST", f"repos/{repo}/issues/{n}/comments", {"body": f"A PR slot is free ({freed} closed), so the `{role}` role is starting on this again (signal = this issue). {RESUME_MARK.format(role=role)}" + FOOTER})
                 report["dispatched"].append(f"{repo}#{n} resume -> {role}")
                 started.add(role)
@@ -1078,7 +1084,7 @@ def main() -> int:
             plan = digest_answer_plan(gh.get(f"repos/{POLICY_REPO}/issues/{n}/comments", per_page=100), owner)
             if not plan:
                 continue
-            gh.write("POST", f"repos/{POLICY_REPO}/actions/workflows/role-{clerk}.yml/dispatches", {"ref": "main", "inputs": {"signal": plan["signal"]}})
+            gh.write("POST", f"repos/{POLICY_REPO}/actions/workflows/role-{clerk}.yml/dispatches", {"ref": "main", "inputs": dispatch_inputs(plan["signal"], "digest answer", POLICY_REPO, n)})
             gh.write("POST", f"repos/{POLICY_REPO}/issues/{n}/comments", {"body": f"Answers seen; the `{clerk}` role is recording them (signal = that comment). It replies here with the decisions-log PRs. {DIGEST_MARK.format(id=plan['id'])}" + FOOTER})
             report["dispatched"].append(f"{short}#{n} digest answers -> {clerk}")
             report["latency_hours"].append(round((now - ts(plan["at"])).total_seconds() / 3600, 1))
