@@ -174,7 +174,7 @@ jobs:
         timeout-minutes: 2
         # v1.0.0, which doesn't take reason or clock yet (it warns and sends neither). This repository merges by
         # rebase, so a PR can't pin its own commit: a one-line follow-up re-pins this to the commit that added them.
-        uses: lunareng/airlock-actions@498bb0a7767c94f11ccfb93e0885bad19995f6cd # v1.0.0
+        uses: lunareng/airlock-actions@1f194ec42f460efcd4408a0362ce8ab484c989cf # main at lunareng/airlock-actions#31
         with:
           role: ${{ inputs.role }}
           signal: ${{ inputs.signal }}
