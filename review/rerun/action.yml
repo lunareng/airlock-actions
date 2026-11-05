@@ -2,15 +2,28 @@ name: claude review, the push-time row
 description: >
   After a person's review, makes the push-time claude-review row say what the review-time run said, so a PR keeps one
   answer (lunareng/autonomy#140). Run it as its own job, with permissions actions: write and pull-requests: read, after the
-  review job (needs: review, if: always() && github.event_name == 'pull_request_review'). It is a separate job so that
+  review job (needs: review), only when that job passed or failed on a pull_request_review. It is a separate job so that
   actions: write never reaches the job that runs a model over the PR. It must not be named claude-review.
 inputs:
   passed:
-    description: "whether the review job passed: ${{ needs.review.result == 'success' }}"
+    description: whether the review job passed (true or false, from needs.review.result)
     required: true
 runs:
   using: composite
   steps:
+    - name: gh (when the runner image ships none; pinned checksum, as the review action installs it)
+      shell: bash
+      env:
+        GH_VERSION: 2.101.0
+        GH_SHA256: 9bca2d1c16825f109907a23307628a2f0698fbf99662b73a5cf0b020293072b8
+      run: |
+        set -euo pipefail
+        command -v gh >/dev/null && exit 0
+        dir="$RUNNER_TEMP/gh-${GH_VERSION}"; mkdir -p "$dir"
+        curl -sSfL -o "$dir/gh.tar.gz" "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz"
+        echo "${GH_SHA256}  $dir/gh.tar.gz" | sha256sum -c -
+        tar xzf "$dir/gh.tar.gz" -C "$dir" --strip-components=2 "gh_${GH_VERSION}_linux_amd64/bin/gh"
+        echo "$dir" >> "$GITHUB_PATH"
     - name: re-run the push-time check
       shell: bash
       env:
@@ -23,5 +36,6 @@ runs:
         GATE: ${{ github.action_path }}/../../gate
       run: |
         # A re-run joins the push's concurrency group, so re-running an old head's job could cancel the new head's review.
-        if [ "$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha)" != "$HEAD" ]; then echo "::notice::the PR has moved past $HEAD; nothing to re-run"; exit 0; fi
+        now="$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha)" || { echo "::warning::could not read the PR's head; re-run the push-time check by hand"; exit 0; }
+        if [ "$now" != "$HEAD" ]; then echo "::notice::the PR has moved past $HEAD; nothing to re-run"; exit 0; fi
         python3 -I "$GATE/rerun.py" --job claude-review --passed "$PASSED" --wait-seconds 60 || echo "::warning::could not re-run the push-time check; re-run it by hand"
