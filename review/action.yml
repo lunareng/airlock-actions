@@ -19,7 +19,9 @@ inputs:
 runs:
   using: composite
   steps:
-  # The full history, for the Markdown-only and workflow-change diffs below.
+  # The full history, for the Markdown-only and workflow-change diffs below. Each is from the merge base (three dots): the
+  # checkout's merge commit can be older than the base branch, and a two-dot diff then reads what main gained since as
+  # this PR's change (lunareng/airlock#178 read as a workflow PR because main's workflow moved while it waited).
   - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
     with:
       fetch-depth: 0
@@ -49,12 +51,12 @@ runs:
       AUTHOR: ${{ github.event.pull_request.user.login }}
       BASE_REF: ${{ github.event.pull_request.base.ref }}
     run: |
-      if ! [[ "$AUTHOR" == *"[bot]" ]] && [ -z "$(git diff --name-only "origin/$BASE_REF" | grep -v '\.md$')" ]; then
+      if ! [[ "$AUTHOR" == *"[bot]" ]] && [ -z "$(git diff --name-only "origin/$BASE_REF...HEAD" | grep -v '\.md$')" ]; then
         echo "only=true" >> "$GITHUB_OUTPUT"; echo "::notice::a person's Markdown-only PR; its merger is its reviewer"
       else
         echo "only=false" >> "$GITHUB_OUTPUT"
       fi
-      if git diff --quiet "origin/$BASE_REF" -- .github/workflows/; then echo "workflows=false" >> "$GITHUB_OUTPUT"; else echo "workflows=true" >> "$GITHUB_OUTPUT"; fi
+      if git diff --quiet "origin/$BASE_REF...HEAD" -- .github/workflows/; then echo "workflows=false" >> "$GITHUB_OUTPUT"; else echo "workflows=true" >> "$GITHUB_OUTPUT"; fi
     shell: bash
   # A head that already passed isn't reviewed again, and nor is an agent's head a person approved: a re-run reads it. That
   # is what makes re-running the push-time job cheap, for a person, for the router's follow_through, and for the step at
@@ -197,7 +199,7 @@ runs:
       # claude-code-action's token exchange refuses a PR that changes anything under .github/workflows/, so nobody
       # can edit the reviewer's prompt, or any workflow, in a PR it reviews. Such a PR gets no Claude verdict, so a
       # person is its reviewer; the next PR is reviewed by the merged file.
-      if ! git diff --quiet "origin/$BASE_REF" -- .github/workflows/; then
+      if ! git diff --quiet "origin/$BASE_REF...HEAD" -- .github/workflows/; then
         # A person's own workflow PR is reviewed by the person who merges it. An agent's needs a person's approving
         # review on this commit, so a role with Workflows: write never lands a workflow change nobody read.
         case "$AUTHOR" in

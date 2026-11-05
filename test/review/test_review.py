@@ -247,4 +247,22 @@ assert next(st for st in REVIEW["runs"]["steps"] if "actions/checkout" in st.get
 assert "never give this job actions: write" in REVIEW["description"]
 print("ok  a person's review waits for the push-time run and makes its row agree")
 
+# The diffs start at the merge base, so what main gained after this checkout's merge commit isn't this PR's change.
+with tempfile.TemporaryDirectory() as d:
+    def git(*a):
+        return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", *a], cwd=d, check=True, capture_output=True, text=True).stdout
+    git("init", "-q", "-b", "main")
+    Path(d, "a.txt").write_text("a\n"); git("add", "-A"); git("commit", "-qm", "base")
+    git("checkout", "-qb", "pr"); Path(d, "b.txt").write_text("b\n"); git("add", "-A"); git("commit", "-qm", "pr")
+    git("checkout", "-q", "main"); git("checkout", "-qb", "merged"); git("merge", "-q", "--no-ff", "-m", "merge", "pr")
+    git("checkout", "-q", "main"); Path(d, ".github/workflows").mkdir(parents=True); Path(d, ".github/workflows/x.yml").write_text("x\n"); git("add", "-A"); git("commit", "-qm", "main moves")
+    git("update-ref", "refs/remotes/origin/main", "main"); git("checkout", "-q", "merged")
+    step = STEPS["docs"]["run"]
+    assert '"origin/$BASE_REF...HEAD"' in step and '"origin/$BASE_REF" ' not in step, step
+    out = Path(d, "out")
+    subprocess.run(["bash", "-e", "-c", step], cwd=d, check=True, capture_output=True, text=True, env={**os.environ, "AUTHOR": "acme-airlock[bot]", "BASE_REF": "main", "GITHUB_OUTPUT": str(out)})
+    assert "workflows=false" in out.read_text(), "main's newer workflow isn't this PR's"
+assert '"origin/$BASE_REF...HEAD" -- .github/workflows/' in VERDICT
+print("ok  a workflow main gained after the merge commit isn't this PR's change")
+
 print("OK: 0 failing case(s)")
