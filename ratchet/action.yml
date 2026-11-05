@@ -73,6 +73,9 @@ runs:
         args=(--policy-dir "$POLICY_DIR" --owner "$OWNER" --policy-repo "$POLICY_REPO" --role "$ROLE")
         [ "$DRY_RUN" = "false" ] || args+=(--dry-run)
         [ -z "$WEEKS" ] || args+=(--weeks "$WEEKS")
-        python -I "$HERE/ratchet.py" "${args[@]}" | tee "$RUNNER_TEMP/ratchet.json"
+        # Exit 1 means it finished and a judge went unread: the report and the summary are what say which.
+        rc=0
+        python -I "$HERE/ratchet.py" "${args[@]}" | tee "$RUNNER_TEMP/ratchet.json" || rc=$?
         echo "report=$RUNNER_TEMP/ratchet.json" >> "$GITHUB_OUTPUT"
         { echo "## Ratchet$([ "$DRY_RUN" = "false" ] || echo ' (dry run)')"; echo; echo '```json'; cat "$RUNNER_TEMP/ratchet.json"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+        exit "$rc"

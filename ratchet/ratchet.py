@@ -380,6 +380,7 @@ def run(ctx: Ctx, weeks: int, now: datetime | None = None) -> dict:
     open_prs = gh(f"repos/{ctx.policy_repo}/pulls", state="open", per_page=100)
     if judge_issues is None or open_prs is None:
         print(f"judge_ran: {ctx.policy_repo}'s judge-missing issues or open PRs are unreadable; judges are skipped this run", file=sys.stderr)
+        report["judges"]["(every judge)"] = {"decision": f"unreadable: {ctx.policy_repo}'s judge-missing issues or open PRs"}
     own = ctx.policy_repo.split("/")[1]
     for path in sorted((ctx.root / "repos").glob("*.yaml")):
         repo = f"{ctx.owner}/{path.stem}"
@@ -390,6 +391,8 @@ def run(ctx: Ctx, weeks: int, now: datetime | None = None) -> dict:
         issues = gh(f"repos/{repo}/issues", state="all", per_page=100, since=(now - timedelta(weeks=26)).isoformat())
         if issues is None:
             report["repos"][path.stem] = "unreadable"
+            if policy.get("default") == "L4" and judge_checks(policy):
+                report["judges"][repo] = {"decision": f"unreadable: {repo}'s issues"}
             continue
         jp = None
         if policy.get("default") == "L4" and judge_checks(policy) and judge_issues is not None and open_prs is not None:
@@ -475,8 +478,8 @@ def demote(ctx: Ctx, repo: str, path: Path, new_text: str, d: dict, today: str, 
 def unreadable_judges(report: dict) -> list[str]:
     """The L4 subjects whose judge the run couldn't read. The run finishes everything else, then fails: "no judge, no L4"
     enforced by a check that can't see reads as a judge that's fine (the loop audit, 2026-11-05: every workflow judge
-    unreadable and the ratchet green for a week, because its token had no Actions read). A repo the ratchet's token
-    can't read at all stays a report line: most of those aren't L4 and it has no business there."""
+    unreadable and the ratchet green for a week, because its token had no Actions read). A repo that isn't L4 with a
+    judge and that its token can't read stays a report line: the ratchet may have no business there."""
     return [f"{k}: {v['decision']}" for k, v in report["judges"].items() if str(v.get("decision", "")).startswith("unreadable")]
 
 

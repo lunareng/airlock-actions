@@ -28,8 +28,11 @@ def watchdog_plan(result: str, issue: dict | None) -> str | None:
 
 
 def gh(*args: str, body: dict | None = None) -> str:
-    return subprocess.run(["gh", "api", *args, *(["--input", "-"] if body is not None else [])], check=True, capture_output=True, text=True,
-                          input=json.dumps(body) if body is not None else None).stdout
+    out = subprocess.run(["gh", "api", *args, *(["--input", "-"] if body is not None else [])], capture_output=True, text=True,
+                         input=json.dumps(body) if body is not None else None)
+    if out.returncode != 0:
+        raise SystemExit(f"gh api {' '.join(args)}: {out.stderr.strip()}")
+    return out.stdout
 
 
 def main() -> int:
@@ -39,7 +42,7 @@ def main() -> int:
     ap.add_argument("--mention", default="")
     a = ap.parse_args()
     repo = os.environ["REPO"]
-    found = [i for i in json.loads(gh(f"repos/{repo}/issues?state=open&labels={LABEL}&per_page=100")) if i.get("title") == TITLE and "pull_request" not in i]
+    found = [i for i in json.loads(gh(f"repos/{repo}/issues?state=open&labels={LABEL}&per_page=100")) if "pull_request" not in i]
     issue = found[0] if found else None
     plan = watchdog_plan(a.result, issue)
     if plan == "open":

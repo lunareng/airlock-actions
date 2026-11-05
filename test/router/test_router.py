@@ -874,7 +874,8 @@ assert _wd.watchdog_plan("failure", {"number": 1}) is None, "an open issue stays
 assert _wd.watchdog_plan("success", {"number": 1}) == "close"
 assert _wd.watchdog_plan("success", None) is None
 assert _wd.watchdog_plan("cancelled", None) is None and _wd.watchdog_plan("skipped", {"number": 1}) is None, "a pass that ran nothing says nothing"
-assert "import router" not in (ROOT / "router" / "watchdog.py").read_text() and "yaml" not in (ROOT / "router" / "watchdog.py").read_text()
+_wsrc = (ROOT / "router" / "watchdog.py").read_text()
+assert "import router" not in _wsrc and "from router" not in _wsrc and "yaml" not in _wsrc
 _wa = yaml.safe_load((ROOT / "router" / "watchdog" / "action.yml").read_text())
 assert all("${{" not in st["run"] and "python3 -I" in st["run"] for st in _wa["runs"]["steps"])
 print("OK: the watchdog")

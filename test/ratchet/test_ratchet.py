@@ -283,4 +283,8 @@ print("OK: ratchet fails closed")
 # A judge the run can't read fails it, once everything else is done; a repo it can't read is only a report line.
 assert ratchet.unreadable_judges({"judges": {"acme/fuses": {"decision": "unreadable: HTTP 403"}, "role x": {"decision": "ran 2 day(s) ago"}}, "repos": {"y": "unreadable"}}) == ["acme/fuses: unreadable: HTTP 403"]
 assert ratchet.unreadable_judges({"judges": {}, "repos": {"y": "unreadable"}}) == []
+# The action keeps the report and the summary on exactly the runs that fail.
+_act = yaml.safe_load((Path(__file__).resolve().parents[2] / "ratchet" / "action.yml").read_text())
+_step = next(st for st in _act["runs"]["steps"] if "ratchet.py" in st.get("run", ""))["run"]
+assert "|| rc=$?" in _step and _step.index("report=") > _step.index("|| rc=$?") and _step.rstrip().endswith('exit "$rc"')
 print("OK: an unreadable judge fails the run")
