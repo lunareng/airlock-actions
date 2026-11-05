@@ -33,6 +33,11 @@ import sys
 import time
 
 
+# Each side re-runs the other when they disagree, so two runs that keep computing different verdicts (from a stale event
+# payload, say) would re-run each other for ever. Past this many attempts the row stays as it is, and a person looks.
+MAX_ATTEMPTS = 3
+
+
 def other_event(event: str | None) -> str:
     return "pull_request_review" if event == "pull_request" else "pull_request"
 
@@ -59,6 +64,8 @@ def rerun_plan(passed: bool, run: dict | None, job: dict | None) -> tuple[str, s
         return "none", f"gate run {run.get('id')} skipped this job"
     if (conclusion == "success") == passed:
         return "none", f"gate run {run.get('id')} already says {conclusion}"
+    if int(run.get("run_attempt") or 1) >= MAX_ATTEMPTS:
+        return "none", f"gate run {run.get('id')} says {conclusion} after {MAX_ATTEMPTS} attempts, so it is left for a person"
     return "rerun", f"gate run {run.get('id')} says {conclusion}, this review makes it {'pass' if passed else 'fail'}"
 
 
