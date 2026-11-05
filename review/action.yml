@@ -73,13 +73,14 @@ runs:
       AUTHOR: ${{ github.event.pull_request.user.login }}
       AGENTS: ${{ inputs.agent-logins }}
       TRIGGER: ${{ github.triggering_actor }}
+      HERE: ${{ github.action_path }}
     run: |
       fail='Verdict: PASS'; case "$TRIGGER" in *"[bot]") fail='Verdict: FAIL' ;; esac
       n="$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" --jq '.[] | select(.user.login == "claude[bot]") | .body | split("\n") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0)) | last // "" | select(. == "Verdict: PASS ('"$SHA"')" or . == "'"$fail"' ('"$SHA"')")' | wc -l)"
       agents="${AGENTS//[/\\[}"; agents="${agents//]/\\]}"
       a=0
       # shellcheck disable=SC2254 # a pattern on purpose
-      case "$AUTHOR" in $agents) a="$(gh api --paginate "repos/$REPO/pulls/$PR/reviews?per_page=100" --jq '[.[] | select(((.user.login // "[bot]") | endswith("[bot]") | not) and (.author_association == "OWNER" or .author_association == "MEMBER" or .author_association == "COLLABORATOR") and (.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED"))] | group_by(.user.login) | map(max_by(.submitted_at)) | if any(.[]; .state == "CHANGES_REQUESTED") then empty else .[] | select(.state == "APPROVED" and .commit_id == "'"$SHA"'") | .id end' | wc -l)" ;; esac
+      case "$AUTHOR" in $agents) if bash "$HERE/approved.sh"; then a=1; fi ;; esac
       if [ "$n" -gt 0 ] || [ "$a" -gt 0 ]; then echo "found=true" >> "$GITHUB_OUTPUT"; echo "::notice::this head already passed, or a person approved it; reading that, not reviewing again"; else echo "found=false" >> "$GITHUB_OUTPUT"; fi
   # The reviewer's prompt, built once from the PR's values (passed through env, never expanded in a script) so both
   # attempts below read the same text.
@@ -178,16 +179,12 @@ runs:
       PR: ${{ github.event.pull_request.number }}
       SHA: ${{ github.event.pull_request.head.sha }}
       AGENTS: ${{ inputs.agent-logins }}
+      HERE: ${{ github.action_path }}
     run: |
       set -euo pipefail
       if [ "$ONLY_DOCS" = "true" ]; then echo "PASS (Markdown-only PR by a person)"; exit 0; fi
-      # A writer's approving review of this exact commit: each writer's latest review that says anything (OWNER, MEMBER or
-      # COLLABORATOR, as Airlock's gate reads it; never a bot or a deleted account), with no change still requested.
-      # Anyone can review a public repository, so a stranger's approval is none.
-      approved() {
-        [ -n "$(gh api --paginate "repos/$REPO/pulls/$PR/reviews?per_page=100" \
-          --jq '[.[] | select(((.user.login // "[bot]") | endswith("[bot]") | not) and (.author_association == "OWNER" or .author_association == "MEMBER" or .author_association == "COLLABORATOR") and (.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED"))] | group_by(.user.login) | map(max_by(.submitted_at)) | if any(.[]; .state == "CHANGES_REQUESTED") then empty else .[] | select(.state == "APPROVED" and .commit_id == "'"$SHA"'") | .id end')" ]
-      }
+      # A person with write access approved this exact commit (approved.sh says what that means).
+      approved() { bash "$HERE/approved.sh"; }
       # When there is no Claude verdict, say why on the PR itself, once per commit: a notice in this log is read by
       # nobody, and a green check with no comment looks like a review that happened.
       say() {
