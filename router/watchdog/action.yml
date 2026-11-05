@@ -1,0 +1,26 @@
+name: airlock router watchdog
+description: >
+  One open issue in the policy repo while the signal router's passes fail, closed by the next pass that succeeds. Run it
+  as its own job after the router's (needs: route, if: always()), with permissions issues: write, on the workflow's
+  GITHUB_TOKEN: it needs no Airlock token and none of the router's code, so a refused mint or a broken pass still gets
+  reported.
+inputs:
+  result:
+    description: the route job's result (needs.route.result)
+    required: true
+  mention:
+    description: the login the issue mentions when it opens; empty mentions nobody
+    default: ""
+runs:
+  using: composite
+  steps:
+    - name: watchdog
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        REPO: ${{ github.repository }}
+        RESULT: ${{ inputs.result }}
+        MENTION: ${{ inputs.mention }}
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        HERE: ${{ github.action_path }}
+      run: python3 -I "$HERE/../watchdog.py" --result "$RESULT" --run-url "$RUN_URL" --mention "$MENTION"

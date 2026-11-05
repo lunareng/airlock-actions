@@ -472,6 +472,14 @@ def demote(ctx: Ctx, repo: str, path: Path, new_text: str, d: dict, today: str, 
     open_pr(repo, "AUTONOMY.yaml", branch, lambda current: demoted_policy(base64.b64decode(current["content"]).decode(), d["demote"], today, d["why"]), msg, body)
 
 
+def unreadable_judges(report: dict) -> list[str]:
+    """The L4 subjects whose judge the run couldn't read. The run finishes everything else, then fails: "no judge, no L4"
+    enforced by a check that can't see reads as a judge that's fine (the loop audit, 2026-11-05: every workflow judge
+    unreadable and the ratchet green for a week, because its token had no Actions read). A repo the ratchet's token
+    can't read at all stays a report line: most of those aren't L4 and it has no business there."""
+    return [f"{k}: {v['decision']}" for k, v in report["judges"].items() if str(v.get("decision", "")).startswith("unreadable")]
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
@@ -499,7 +507,10 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     report = run(Ctx(root, a.owner, a.policy_repo, a.role, cfg, a.dry_run), a.weeks or cfg["weeks"])
     print(json.dumps(report, indent=2, default=str))
-    return 0
+    blind = unreadable_judges(report)
+    for line in blind:
+        print(f"::error title=ratchet::{line}", file=sys.stderr)
+    return 1 if blind else 0
 
 
 if __name__ == "__main__":

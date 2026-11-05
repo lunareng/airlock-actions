@@ -133,6 +133,25 @@ refusal is listed under `refused` in the report, and the pass exits 1 at the end
 
 `follow_through` needs `writes.dispatch: true`, as `gate_rerun` does: a re-run needs Actions write. It reads runs and
 jobs through the Actions API, never the Checks API, which Airlock doesn't grant.
+## The watchdog
+
+`lunareng/airlock-actions/router/watchdog` keeps one open issue in the policy repo while passes fail, and closes it on the
+next success. Run it as a job after the router's, on the workflow's own token, so a refused mint or a broken pass is still
+reported:
+
+```yaml
+  watchdog:
+    needs: route
+    if: ${{ always() && !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - uses: lunareng/airlock-actions/router/watchdog@<sha>
+        with:
+          result: ${{ needs.route.result }}
+          mention: acme-owner
+```
 
 ## Tests
 
