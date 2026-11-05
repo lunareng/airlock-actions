@@ -34,7 +34,11 @@ const { status, out } = answer;
 const sessions = out.sessions && typeof out.sessions === 'object' ? Object.entries(out.sessions) : [];
 hide(out.token, out.read?.token, out.telemetry?.token, ...sessions.map(([, s]) => s?.token));
 say(`Airlock: ${status} ${out.decision ?? 'no answer'}${out.reason ? ` (${out.reason}: ${out.message})` : ''}, run ${out.run ?? '-'}`);
-const grant = Array.isArray(out.grant?.repositories) ? `${out.grant.repositories.length} repositories, ${Object.entries(out.grant.permissions ?? {}).map(([k, v]) => `${k}:${v}`).join(' ')}` : '';
+// The grant's repositories by name after the count, so a shadow run's log says what it would have handed out
+// (lunareng/airlock-actions#26). A name not shaped like a GitHub repository's is printed as `?`, never raw.
+const repos = Array.isArray(out.grant?.repositories) ? out.grant.repositories : null;
+const names = repos?.length ? ` (${repos.map((n) => (typeof n === 'string' && /^[A-Za-z0-9._-]{1,100}$/.test(n) ? n : '?')).join(', ')})` : '';
+const grant = repos ? `${repos.length} repositories${names}, ${Object.entries(out.grant.permissions ?? {}).map(([k, v]) => `${k}:${v}`).join(' ')}` : '';
 
 // The run's telemetry, exported to every later step: only Claude Code's own variables, only to Airlock's own
 // receiver, and its session masked first. Anything else in it, or no GITHUB_ENV, and nothing is exported: telemetry

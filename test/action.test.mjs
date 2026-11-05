@@ -89,7 +89,7 @@ test('a grant: the token is masked before anything else, then goes to the post s
   assert.equal(lines[lines.findIndex((l) => l.includes(TOKEN))], `::add-mask::${TOKEN}`);
   assert.deepEqual(r.output, { token: TOKEN, 'expires-at': '2026-10-30T04:00:00.000Z', sessions: '{}', 'read-token': '', telemetry: 'false' });
   assert.deepEqual(r.state, { token: TOKEN, origin: AIRLOCK, role: 'triage' });
-  assert.match(r.stdout, /Airlock granted: 1 repositories, contents:write pull_requests:write, until 2026-10-30T04:00:00\.000Z/);
+  assert.match(r.stdout, /Airlock granted: 1 repositories \(webapp\), contents:write pull_requests:write, until 2026-10-30T04:00:00\.000Z/);
 });
 
 test('it asks Mint for the role, proven by an OIDC token for Airlock\'s origin, and sends its version', () => {
@@ -144,7 +144,19 @@ test('shadow is green: what Airlock would hand out is printed, nothing is handed
   assert.deepEqual(r.output, { telemetry: 'false' });
   assert.deepEqual(r.state, {});
   assert.deepEqual(r.env, {});
-  assert.match(r.stdout, /Airlock would grant: 1 repositories, contents:write pull_requests:write, and sessions for tracker\. Shadow: nothing was handed out\./);
+  assert.match(r.stdout, /Airlock would grant: 1 repositories \(webapp\), contents:write pull_requests:write, and sessions for tracker\. Shadow: nothing was handed out\./);
+});
+
+test('the grant line names the repositories after the count; a name not shaped like one is `?`; none prints as before', () => {
+  const shadow = (repositories) => main({ mint: { status: 200, body: { mode: 'shadow', decision: 'would_grant', run: '9.1', grant: { repositories, permissions: { contents: 'read' } } } } });
+  const line = (r) => r.stdout.split('\n').find((l) => l.startsWith('Airlock would grant:'));
+  assert.equal(line(shadow(['webapp', 'api'])), 'Airlock would grant: 2 repositories (webapp, api), contents:read. Shadow: nothing was handed out.');
+  assert.equal(line(shadow(['bad name!'])), 'Airlock would grant: 1 repositories (?), contents:read. Shadow: nothing was handed out.');
+  assert.equal(line(shadow(['ok.repo_1-x', 'x'.repeat(101), '', 7, 'a\nb', null])), 'Airlock would grant: 6 repositories (ok.repo_1-x, ?, ?, ?, ?, ?), contents:read. Shadow: nothing was handed out.');
+  assert.equal(line(shadow([])), 'Airlock would grant: 0 repositories, contents:read. Shadow: nothing was handed out.');
+  assert.equal(line(main({ mint: { status: 200, body: { mode: 'shadow', decision: 'would_grant', run: '9.1' } } })), 'Airlock would grant: nothing. Shadow: nothing was handed out.');
+  const live2 = main(live({ grant: { repositories: ['webapp', 'api'], permissions: { contents: 'write' } } }));
+  assert.match(live2.stdout, /^Airlock granted: 2 repositories \(webapp, api\), contents:write, until 2026-10-30T04:00:00\.000Z$/m);
 });
 
 test('Airlock unreachable, an answer that isn\'t JSON, or no OIDC for the job: no token, the run stops', () => {
