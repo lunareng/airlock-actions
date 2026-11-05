@@ -58,7 +58,8 @@ runs:
     shell: bash
   # A head that already passed isn't reviewed again, and nor is an agent's head a person approved: a re-run reads it. That
   # is what makes re-running the push-time job cheap, for a person, for the router's follow_through, and for the step at
-  # the end of this file. A FAIL is reviewed again on a re-run, since a fixed PR body is new work with no new commit.
+  # review/rerun. A FAIL is reviewed again only on a person's re-run, since a fixed PR body is new work with no new commit;
+  # a bot's re-run reads it, so a dismissed approval can't roll the dice for a new verdict.
   - id: already
     if: github.event_name == 'pull_request'
     shell: bash
@@ -69,8 +70,10 @@ runs:
       SHA: ${{ github.event.pull_request.head.sha }}
       AUTHOR: ${{ github.event.pull_request.user.login }}
       AGENTS: ${{ inputs.agent-logins }}
+      TRIGGER: ${{ github.triggering_actor }}
     run: |
-      n="$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" --jq '.[] | select(.user.login == "claude[bot]") | .body | split("\n") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0)) | last // "" | select(. == "Verdict: PASS ('"$SHA"')")' | wc -l)"
+      fail='Verdict: PASS'; case "$TRIGGER" in *"[bot]") fail='Verdict: FAIL' ;; esac
+      n="$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" --jq '.[] | select(.user.login == "claude[bot]") | .body | split("\n") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0)) | last // "" | select(. == "Verdict: PASS ('"$SHA"')" or . == "'"$fail"' ('"$SHA"')")' | wc -l)"
       agents="${AGENTS//[/\\[}"; agents="${agents//]/\\]}"
       a=0
       # shellcheck disable=SC2254 # a pattern on purpose
