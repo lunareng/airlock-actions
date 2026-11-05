@@ -864,3 +864,17 @@ _tenant.role_file = lambda role, roles_dir=None: {"writes": {"repos": []}}
 assert any("follow_through re-runs need" in p for p in config_problems({"follow_through": True})), "follow_through needs writes.dispatch: true"
 _tenant.role_file = _saved_rf
 print("OK: follow_through through main()")
+# The watchdog: one issue while passes fail, closed by the next success; it shares no code with the router.
+import importlib.util as _iu  # noqa: E402
+_spec = _iu.spec_from_file_location("watchdog", ROOT / "router" / "watchdog.py")
+_wd = _iu.module_from_spec(_spec)
+_spec.loader.exec_module(_wd)
+assert _wd.watchdog_plan("failure", None) == "open"
+assert _wd.watchdog_plan("failure", {"number": 1}) is None, "an open issue stays quiet while passes keep failing"
+assert _wd.watchdog_plan("success", {"number": 1}) == "close"
+assert _wd.watchdog_plan("success", None) is None
+assert _wd.watchdog_plan("cancelled", None) is None and _wd.watchdog_plan("skipped", {"number": 1}) is None, "a pass that ran nothing says nothing"
+assert "import router" not in (ROOT / "router" / "watchdog.py").read_text() and "yaml" not in (ROOT / "router" / "watchdog.py").read_text()
+_wa = yaml.safe_load((ROOT / "router" / "watchdog" / "action.yml").read_text())
+assert all("${{" not in st["run"] and "python3 -I" in st["run"] for st in _wa["runs"]["steps"])
+print("OK: the watchdog")

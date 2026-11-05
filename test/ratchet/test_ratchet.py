@@ -279,3 +279,8 @@ assert ratchet.main(["--dry-run", "--policy-dir", str(POLICY), "--policy-repo", 
 assert ratchet.main(["--dry-run", "--policy-dir", str(POLICY / "repos"), "--policy-repo", "acme/policy", "--owner", "acme"]) == 2
 assert reads == [], reads
 print("OK: ratchet fails closed")
+
+# A judge the run can't read fails it, once everything else is done; a repo it can't read is only a report line.
+assert ratchet.unreadable_judges({"judges": {"acme/fuses": {"decision": "unreadable: HTTP 403"}, "role x": {"decision": "ran 2 day(s) ago"}}, "repos": {"y": "unreadable"}}) == ["acme/fuses: unreadable: HTTP 403"]
+assert ratchet.unreadable_judges({"judges": {}, "repos": {"y": "unreadable"}}) == []
+print("OK: an unreadable judge fails the run")
