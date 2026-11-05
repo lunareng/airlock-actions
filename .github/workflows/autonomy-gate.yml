@@ -21,4 +21,4 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
-      - uses: lunareng/airlock-actions/gate@a85e101610f81c299859acbe911102b0f73bc2f8 # main at lunareng/airlock-actions a85e101
+      - uses: lunareng/airlock-actions/gate@5217e9275cfdf0e6d5692fab0038b7d4234b9334 # main at lunareng/airlock-actions 5217e92
