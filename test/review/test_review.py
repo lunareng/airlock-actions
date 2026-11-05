@@ -188,7 +188,7 @@ print("ok  no verdict is explained on the PR once per commit; a workflow PR skip
 
 
 # A re-run of a head with its answer reads it: nobody pays for a second review to turn a row green.
-def already(comments=(), reviews=()):
+def already(comments=(), reviews=(), author="acme-airlock[bot]"):
     bin_dir = tempfile.mkdtemp()
     Path(bin_dir, "gh").write_text(GH)
     os.chmod(Path(bin_dir, "gh"), 0o755)
@@ -197,19 +197,21 @@ def already(comments=(), reviews=()):
     out = Path(bin_dir, "out")
     subprocess.run(["bash", "-e", "-o", "pipefail", "-c", STEPS["already"]["run"]], check=True, capture_output=True, text=True,
                    env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "CANNED": str(canned), "GITHUB_OUTPUT": str(out),
-                        "GH_TOKEN": "x", "REPO": "acme/api", "PR": "7", "SHA": SHA})
+                        "GH_TOKEN": "x", "REPO": "acme/api", "PR": "7", "SHA": SHA, "AUTHOR": author, "AGENTS": "*[bot]"})
     return out.read_text().strip()
 
 
 assert already([claude(f"fine\nVerdict: PASS ({SHA})")]) == "found=true"
-assert already([claude(f"Verdict: FAIL ({SHA})")]) == "found=true"
-assert already(reviews=[approval("matthew")]) == "found=true", "a person's approval of this head is its answer"
+assert already([claude(f"Verdict: FAIL ({SHA})")]) == "found=false", "a FAIL is reviewed again: a fixed PR body is new work"
+assert already(reviews=[approval("matthew")]) == "found=true", "a person's approval of an agent's head is its answer"
+assert already(reviews=[approval("matthew")], author="matthew") == "found=false", "a person's own PR is still reviewed"
+assert already([claude(f"Verdict: PASS ({SHA})")], author="matthew") == "found=true"
 assert already() == "found=false"
 assert already([claude(f"Verdict: PASS ({'b' * 40})")]) == "found=false", "a new head is new work"
 assert already(reviews=[approval("other[bot]")]) == "found=false", "a bot's approval isn't a person's"
 for sid in ("prompt", "review", "posted", "review-again"):
     assert "steps.already.outputs.found != 'true'" in STEPS[sid]["if"], f"{sid} must not run on a head that has its answer"
-print("ok  a head with its verdict or a person's approval is read, not reviewed again")
+print("ok  a head that passed, or an agent's head a person approved, is read, not reviewed again")
 
 # A person's review waits for the push-time run, then makes its row agree, whatever this run's verdict was.
 NAMED = {st.get("name"): st for st in REVIEW["runs"]["steps"]}
@@ -220,6 +222,7 @@ assert wait["if"] == "github.event_name == 'pull_request_review'" and "--wait-on
 assert again["if"] == "always() && github.event_name == 'pull_request_review'", "a failing verdict still updates the row"
 assert again["env"]["PASSED"] == "${{ steps.verdict.outcome == 'success' }}" and NAMED["verdict"]["id"] == "verdict"
 assert "--job claude-review" in again["run"] and "${{" not in again["run"]
+assert again["run"].index(".head.sha") < again["run"].index("rerun.py"), "an old head's re-run must not cancel the new head's review"
 assert "actions: write" in REVIEW["description"]
 print("ok  a person's review waits for the push-time run and makes its row agree")
 

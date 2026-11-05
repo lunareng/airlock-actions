@@ -55,9 +55,9 @@ runs:
       fi
       if git diff --quiet "origin/$BASE_REF" -- .github/workflows/; then echo "workflows=false" >> "$GITHUB_OUTPUT"; else echo "workflows=true" >> "$GITHUB_OUTPUT"; fi
     shell: bash
-  # A head that already has its answer isn't reviewed again: a re-run reads it. That is what makes re-running the push-time
-  # job cheap, for a person, for the router's follow_through, and for the step at the end of this file. New work is a new
-  # head, and a new head has no verdict.
+  # A head that already passed isn't reviewed again, and nor is an agent's head a person approved: a re-run reads it. That
+  # is what makes re-running the push-time job cheap, for a person, for the router's follow_through, and for the step at
+  # the end of this file. A FAIL is reviewed again on a re-run, since a fixed PR body is new work with no new commit.
   - id: already
     if: github.event_name == 'pull_request'
     shell: bash
@@ -66,10 +66,15 @@ runs:
       REPO: ${{ github.repository }}
       PR: ${{ github.event.pull_request.number }}
       SHA: ${{ github.event.pull_request.head.sha }}
+      AUTHOR: ${{ github.event.pull_request.user.login }}
+      AGENTS: ${{ inputs.agent-logins }}
     run: |
-      n="$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" --jq '.[] | select(.user.login == "claude[bot]") | .body | split("\n") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0)) | last // "" | select(. == "Verdict: PASS ('"$SHA"')" or . == "Verdict: FAIL ('"$SHA"')")' | wc -l)"
-      a="$(gh api --paginate "repos/$REPO/pulls/$PR/reviews?per_page=100" --jq ".[] | select(.state == \"APPROVED\" and .commit_id == \"$SHA\" and (.user.login | endswith(\"[bot]\") | not)) | .id" | wc -l)"
-      if [ "$n" -gt 0 ] || [ "$a" -gt 0 ]; then echo "found=true" >> "$GITHUB_OUTPUT"; echo "::notice::this head already has its verdict or a person's approval; reading it, not reviewing again"; else echo "found=false" >> "$GITHUB_OUTPUT"; fi
+      n="$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" --jq '.[] | select(.user.login == "claude[bot]") | .body | split("\n") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0)) | last // "" | select(. == "Verdict: PASS ('"$SHA"')")' | wc -l)"
+      agents="${AGENTS//[/\\[}"; agents="${agents//]/\\]}"
+      a=0
+      # shellcheck disable=SC2254 # a pattern on purpose
+      case "$AUTHOR" in $agents) a="$(gh api --paginate "repos/$REPO/pulls/$PR/reviews?per_page=100" --jq ".[] | select(.state == \"APPROVED\" and .commit_id == \"$SHA\" and (.user.login | endswith(\"[bot]\") | not)) | .id" | wc -l)" ;; esac
+      if [ "$n" -gt 0 ] || [ "$a" -gt 0 ]; then echo "found=true" >> "$GITHUB_OUTPUT"; echo "::notice::this head already passed, or a person approved it; reading that, not reviewing again"; else echo "found=false" >> "$GITHUB_OUTPUT"; fi
   # The reviewer's prompt, built once from the PR's values (passed through env, never expanded in a script) so both
   # attempts below read the same text.
   - id: prompt
@@ -232,6 +237,10 @@ runs:
       REPO: ${{ github.repository }}
       HEAD: ${{ github.event.pull_request.head.sha }}
       RUN_ID: ${{ github.run_id }}
+      PR: ${{ github.event.pull_request.number }}
       PASSED: ${{ steps.verdict.outcome == 'success' }}
       GATE: ${{ github.action_path }}/../gate
-    run: python3 -I "$GATE/rerun.py" --job claude-review --passed "$PASSED" --wait-seconds 60 || echo "::warning::could not re-run the push-time check (does this job have actions:write?); re-run it by hand"
+    run: |
+      # A re-run joins the push's concurrency group, so re-running an old head's job could cancel the new head's review.
+      if [ "$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha)" != "$HEAD" ]; then echo "::notice::the PR has moved past $HEAD; nothing to re-run"; exit 0; fi
+      python3 -I "$GATE/rerun.py" --job claude-review --passed "$PASSED" --wait-seconds 60 || echo "::warning::could not re-run the push-time check (does this job have actions:write?); re-run it by hand"
