@@ -12,6 +12,7 @@ permissions:
   pull-requests: write
   issues: write
   id-token: write
+  actions: read # the review waits for the push-time run; never write here, this job runs a model over the PR
 # Each event kind cancels only its own kind; a new push still cancels the review of the head it replaces.
 concurrency:
   group: claude-review-${{ github.ref }}-${{ github.event_name }}
@@ -23,7 +24,7 @@ jobs:
     runs-on: ubuntu-latest # a public repository: GitHub-hosted runners, free, and the self-hosted pools take no public repositories
     timeout-minutes: 20
     steps:
-      - uses: lunareng/airlock-actions/review@3c27f12c3d8265575f388feddff4ae87df5bd08c # main at lunareng/airlock-actions#15
+      - uses: lunareng/airlock-actions/review@d5faebe728259bfaf98c7787f7cd462a4716a1ed # main at lunareng/airlock-actions d5faebe
         with:
           claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           agent-logins: "lunar-*[bot]"
@@ -34,6 +35,21 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: lunareng/airlock-actions/review/security@3c27f12c3d8265575f388feddff4ae87df5bd08c # main at lunareng/airlock-actions#15
+      - uses: lunareng/airlock-actions/review/security@d5faebe728259bfaf98c7787f7cd462a4716a1ed # main at lunareng/airlock-actions d5faebe
         with:
           claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+  # After a person's review, the push-time claude-review row says what the review's run said (lunareng/autonomy#140).
+  # Its own job, so actions: write never reaches the job above. It must not be named claude-review.
+  rows:
+    name: claude-review-rows
+    needs: review
+    if: ${{ always() && github.event_name == 'pull_request_review' && (needs.review.result == 'success' || needs.review.result == 'failure') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      pull-requests: read
+    steps:
+      - uses: lunareng/airlock-actions/review/rerun@d5faebe728259bfaf98c7787f7cd462a4716a1ed # main at lunareng/airlock-actions d5faebe
+        with:
+          passed: ${{ needs.review.result == 'success' }}
