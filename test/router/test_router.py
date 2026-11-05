@@ -704,7 +704,7 @@ assert any("ci_main" in r for r in _rep["routed"]), "so did ci_main"
 print("OK: a refused write ends one repo's turn, not the pass")
 
 # Follow-through: what moves an agent's PR between its role's runs.
-from router import FOLLOW_MARK, follow_marked, follow_plan, latest_pr_runs, lost_runner, pr_role, role_open_count, role_waiting_count  # noqa: E402
+from router import FOLLOW_MARK, follow_marked, follow_plan, latest_pr_runs, lost_runner, person_approved, pr_role, role_open_count, role_waiting_count  # noqa: E402
 _H = "a" * 40
 _V = lambda v, sha=_H: {"user": {"login": "claude[bot]"}, "created_at": "2026-11-01T00:00:00Z", "body": f"notes\n\nVerdict: {v} ({sha})"}  # noqa: E731
 _PR = {"head": {"sha": _H, "ref": "agent/cli-engineer/x"}, "mergeable_state": "blocked", "labels": L("level:L4"), "auto_merge": {"merge_method": "rebase"}}
@@ -714,8 +714,8 @@ _ran = {"name": "claude-review", "conclusion": "failure", "steps": [{"conclusion
 _gone = {"name": "test", "conclusion": "failure", "steps": []}
 
 
-def _fp(latest, jobs=None, comments=(), workflow_pr=False, cap=2, **pr):
-    return follow_plan({**_PR, **pr}, latest, jobs or {}, list(comments), workflow_pr, cap)
+def _fp(latest, jobs=None, comments=(), workflow_pr=False, cap=2, approved=False, **pr):
+    return follow_plan({**_PR, **pr}, latest, jobs or {}, list(comments), workflow_pr, cap, approved)
 
 
 assert latest_pr_runs([{"id": 1, "head_sha": _H, "event": "pull_request", "path": _CI}, {"id": 2, "head_sha": _H, "event": "pull_request", "path": _CI + "@main"},
@@ -736,6 +736,14 @@ assert _fp({_RV: _run(1, "failure")}, {1: [_ran]}, [_V("FAIL", "b" * 40)])["wake
 # A workflow PR with no approval is a person's to move: no re-run, no wake (lunar-cli#106).
 _wf = _fp({_RV: _run(1, "failure")}, {1: [_ran]}, [_V("PASS")], workflow_pr=True)
 assert _wf["rerun"] == [] and _wf["wake"] is None, _wf
+# A person's approval: they took it from here. The red row is re-read, a FAIL wakes nobody, and a workflow PR's row clears.
+assert _fp({_RV: _run(1, "failure")}, {1: [_ran]}, [_V("FAIL")], approved=True) == {"rerun": [1], "wake": None, "stuck": []}
+assert _fp({_RV: _run(1, "failure")}, {1: [_ran]}, workflow_pr=True, approved=True)["rerun"] == [1]
+assert person_approved([{"state": "APPROVED", "commit_id": _H, "user": {"login": "acme-owner"}}], _H)
+assert not person_approved([{"state": "APPROVED", "commit_id": "b", "user": {"login": "acme-owner"}}], _H), "an older head's approval isn't this head's"
+assert not person_approved([{"state": "APPROVED", "commit_id": _H, "user": {"login": "x[bot]"}}], _H)
+assert not person_approved([{"state": "COMMENTED", "commit_id": _H, "user": {"login": "acme-owner"}}], _H)
+assert not person_approved([{"state": "APPROVED", "commit_id": _H, "user": None}], _H), "a deleted account approves nothing"
 # The advisory security job failing in the same run moves nothing.
 assert _fp({_RV: _run(1, "failure")}, {1: [{**_ran, "name": "claude-security-review"}, {"name": "claude-review", "conclusion": "success", "steps": []}]}) == {"rerun": [], "wake": None, "stuck": []}
 # A job that lost its runner is re-run in any workflow, the gate's too; the code wasn't what failed.
@@ -767,3 +775,71 @@ _prs = {"acme/cli": [{"user": {"login": _own}, "labels": L("level:L2")}, {"user"
 assert role_open_count("cli-engineer", _own, ["acme/cli"], _prs) == 2, "two PRs wait on a person and hold no slot"
 assert role_waiting_count("cli-engineer", _own, ["acme/cli"], _prs) == 2
 print("OK: the budget")
+
+# follow_through through main(): the rule's wiring, on a stand-in GitHub. A conflict wakes the role with its marker written
+# first; a marker already there, or the role already running, starts nothing; a refused read ends one repo's turn.
+_FT = {"number": 8, "user": {"login": "acme-cli-engineer[bot]"}, "head": {"sha": "c" * 40, "ref": "agent/cli-engineer/x"}, "labels": [], "html_url": "https://github.com/acme/cli/pull/8"}
+
+
+def _ft_gh(marks=(), busy=False, refuse_read=False):
+    def fake(args, **kw):
+        if args[0] != "gh":
+            return _Probe(0, "")
+        path = args[2] if len(args) > 2 and not args[2].startswith("-") else ""
+        base, _, q = path.partition("?")
+        out = None
+        if refuse_read and base == "repos/acme/cli/pulls/8":
+            return _Probe(1, "gh: Server Error (HTTP 502)")
+        if base == "repos/acme/cli/pulls":
+            out = [_FT]
+        elif base == "repos/acme/cli/pulls/8":
+            out = {**_FT, "mergeable_state": "dirty"}
+        elif base == "repos/acme/cli/issues/8/comments":
+            out = list(marks)
+        elif "/commits/" in base:
+            out = {"commit": {"committer": {"date": "2026-10-30T10:00:00Z"}}}
+        elif base.endswith("/runs") and "role-" in base:
+            out = {"workflow_runs": [], "total_count": 1 if busy else 0}
+        if out is None:
+            return _fake_gh(args, **kw)
+        p = _Probe(0, "")
+        p.stdout = _j.dumps(out)
+        return p
+    return fake
+
+
+def _ft_pass(**kw):
+    _o = _io.StringIO()
+    _sleep, _tenant.time.sleep = _tenant.time.sleep, lambda s: None
+    _sp.run = _ft_gh(**kw)
+    try:
+        sys.argv = ["router.py", "--dry-run", "--policy-dir", str(FIX), "--policy-repo", "acme/policy"]
+        with _ctx.redirect_stdout(_o), _ctx.redirect_stderr(_io.StringIO()):
+            code = _tenant.main()
+    finally:
+        _sp.run = _real
+        _tenant.time.sleep = _sleep
+    _tenant.configure(FIX, "acme/policy", "router", RCFG)
+    return code, _j.loads(_o.getvalue())
+
+
+_code, _rep = _ft_pass()
+assert _code == 0 and "acme/cli#8 follow-through (conflict) -> cli-engineer" not in _rep["dispatched"], "cli-engineer was already started this pass, by acme/cli#5"
+_TOOL_REQ_SAVED, _TOOL_REQ["labels"] = _TOOL_REQ["labels"], [{"name": "tool-request"}, {"name": "routed"}]
+_code, _rep = _ft_pass()
+assert "acme/cli#8 follow-through (conflict) -> cli-engineer" in _rep["dispatched"], _rep
+_w = [w for w in _rep["writes"] if "issues/8/comments" in w or "role-cli-engineer" in w]
+assert _w[0].startswith("POST repos/acme/cli/issues/8/comments") and "dispatches" in _w[1], "the marker is written before the role starts"
+assert '"reason": "follow-through conflict on acme/' in _w[1], _w
+_mark = {"user": {"login": next(iter(_tenant.router_logins()))}, "body": FOLLOW_MARK.format(sha="c" * 40, why="conflict")}
+assert not any("follow-through" in d for d in _ft_pass(marks=[_mark])[1]["dispatched"]), "once per head and reason"
+assert not any("follow-through" in d for d in _ft_pass(busy=True)[1]["dispatched"]), "never over a run already going"
+_code, _rep = _ft_pass(refuse_read=True)
+assert _code == 1 and any("follow_through acme/cli" in r for r in _rep["refused"]), _rep
+assert "acme/cli" in str(_rep["refused"]) and "policy#40 digest answers -> clerk" in _rep["dispatched"], "a read it can't make ends one turn, and the report is still printed"
+_TOOL_REQ["labels"] = _TOOL_REQ_SAVED
+_saved_rf = _tenant.role_file
+_tenant.role_file = lambda role, roles_dir=None: {"writes": {"repos": []}}
+assert any("follow_through re-runs need" in p for p in config_problems({"follow_through": True})), "follow_through needs writes.dispatch: true"
+_tenant.role_file = _saved_rf
+print("OK: follow_through through main()")
