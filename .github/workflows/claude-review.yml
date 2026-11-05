@@ -24,7 +24,7 @@ jobs:
     runs-on: ubuntu-latest # a public repository: GitHub-hosted runners, free, and the self-hosted pools take no public repositories
     timeout-minutes: 20
     steps:
-      - uses: lunareng/airlock-actions/review@a85e101610f81c299859acbe911102b0f73bc2f8 # main at lunareng/airlock-actions a85e101
+      - uses: lunareng/airlock-actions/review@5217e9275cfdf0e6d5692fab0038b7d4234b9334 # main at lunareng/airlock-actions 5217e92
         with:
           claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           agent-logins: "lunar-*[bot]"
@@ -35,7 +35,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: lunareng/airlock-actions/review/security@a85e101610f81c299859acbe911102b0f73bc2f8 # main at lunareng/airlock-actions a85e101
+      - uses: lunareng/airlock-actions/review/security@5217e9275cfdf0e6d5692fab0038b7d4234b9334 # main at lunareng/airlock-actions 5217e92
         with:
           claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
   # The two claude-review rows, one per event, say the same thing. Its own job, so actions: write never reaches the job
@@ -50,6 +50,6 @@ jobs:
       actions: write
       pull-requests: read
     steps:
-      - uses: lunareng/airlock-actions/review/rerun@a85e101610f81c299859acbe911102b0f73bc2f8 # main at lunareng/airlock-actions a85e101
+      - uses: lunareng/airlock-actions/review/rerun@5217e9275cfdf0e6d5692fab0038b7d4234b9334 # main at lunareng/airlock-actions 5217e92
         with:
           passed: ${{ needs.review.result == 'success' }}
