@@ -24,7 +24,7 @@ jobs:
     runs-on: ubuntu-latest # a public repository: GitHub-hosted runners, free, and the self-hosted pools take no public repositories
     timeout-minutes: 20
     steps:
-      - uses: lunareng/airlock-actions/review@d5faebe728259bfaf98c7787f7cd462a4716a1ed # main at lunareng/airlock-actions d5faebe
+      - uses: lunareng/airlock-actions/review@a85e101610f81c299859acbe911102b0f73bc2f8 # main at lunareng/airlock-actions a85e101
         with:
           claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           agent-logins: "lunar-*[bot]"
@@ -35,21 +35,21 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: lunareng/airlock-actions/review/security@d5faebe728259bfaf98c7787f7cd462a4716a1ed # main at lunareng/airlock-actions d5faebe
+      - uses: lunareng/airlock-actions/review/security@a85e101610f81c299859acbe911102b0f73bc2f8 # main at lunareng/airlock-actions a85e101
         with:
           claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-  # After a person's review, the push-time claude-review row says what the review's run said (lunareng/autonomy#140).
-  # Its own job, so actions: write never reaches the job above. It must not be named claude-review.
+  # The two claude-review rows, one per event, say the same thing. Its own job, so actions: write never reaches the job
+  # above. It must not be named claude-review.
   rows:
     name: claude-review-rows
     needs: review
-    if: ${{ always() && github.event_name == 'pull_request_review' && (needs.review.result == 'success' || needs.review.result == 'failure') }}
+    if: ${{ always() && (needs.review.result == 'success' || needs.review.result == 'failure') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       actions: write
       pull-requests: read
     steps:
-      - uses: lunareng/airlock-actions/review/rerun@d5faebe728259bfaf98c7787f7cd462a4716a1ed # main at lunareng/airlock-actions d5faebe
+      - uses: lunareng/airlock-actions/review/rerun@a85e101610f81c299859acbe911102b0f73bc2f8 # main at lunareng/airlock-actions a85e101
         with:
           passed: ${{ needs.review.result == 'success' }}
