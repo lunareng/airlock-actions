@@ -28,6 +28,13 @@ if args[:2] == ["pr", "comment"]:
     sys.exit(0)
 path = next(a for a in args if a.startswith("repos/"))
 expr = args[args.index("--jq") + 1]
+if "/collaborators/" in path:
+    login = path.split("/collaborators/")[1].split("/")[0]
+    rs = [r for r in json.load(open(os.environ["CANNED"]))["reviews"] if r["user"]["login"] == login]
+    writer = rs and rs[-1].get("author_association") in ("OWNER", "MEMBER", "COLLABORATOR")
+    permission = rs[-1].get("permission", "write" if writer else "read") if rs else "none"
+    sys.stdout.write(subprocess.run(["jq", "-r", expr], input=json.dumps({"permission": permission}), capture_output=True, text=True, check=True).stdout)
+    sys.exit(0)
 kind = "reviews" if "/reviews" in path else "comments"
 data = json.load(open(os.environ["CANNED"]))[kind]
 pages = [data[i:i + 100] for i in range(0, len(data), 100)] or [[]]
@@ -63,7 +70,7 @@ def verdict(author: str, reviews=(), comments=(), workflow_change=False, agents=
     canned.write_text(json.dumps({"reviews": list(reviews), "comments": list(comments)}))
     env = {**os.environ, "PATH": f"{bin_dir}:{Path(sys.executable).parent}:{os.environ['PATH']}", "CANNED": str(canned),
            "GH_TOKEN": "x", "ONLY_DOCS": "false", "BASE_REF": "main", "AUTHOR": author, "REPO": "acme/api", "PR": "7",
-           "SHA": SHA, "AGENTS": agents, "POSTED": str(Path(bin_dir, "posted"))}
+           "SHA": SHA, "AGENTS": agents, "POSTED": str(Path(bin_dir, "posted")), "HERE": str(ROOT / "review")}
     r = subprocess.run(["bash", "-e", "-c", VERDICT], cwd=d, env=env, capture_output=True, text=True)
     r.posted = Path(bin_dir, "posted").read_text() if Path(bin_dir, "posted").exists() else ""
     return r
@@ -197,7 +204,7 @@ def already(comments=(), reviews=(), author="acme-airlock[bot]", trigger="matthe
     out = Path(bin_dir, "out")
     subprocess.run(["bash", "-e", "-o", "pipefail", "-c", STEPS["already"]["run"]], check=True, capture_output=True, text=True,
                    env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "CANNED": str(canned), "GITHUB_OUTPUT": str(out),
-                        "GH_TOKEN": "x", "REPO": "acme/api", "PR": "7", "SHA": SHA, "AUTHOR": author, "AGENTS": "*[bot]", "TRIGGER": trigger})
+                        "GH_TOKEN": "x", "REPO": "acme/api", "PR": "7", "SHA": SHA, "AUTHOR": author, "AGENTS": "*[bot]", "TRIGGER": trigger, "HERE": str(ROOT / "review")})
     return out.read_text().strip()
 
 
@@ -218,6 +225,14 @@ assert already(reviews=[approval("stranger", assoc="CONTRIBUTOR")]) == "found=fa
 assert already(reviews=[approval("owner"), approval("owner", state="CHANGES_REQUESTED", at="2026-11-02T00:00:00Z")]) == "found=false", "a later change request takes it back"
 assert already(reviews=[approval("owner"), approval("second", state="CHANGES_REQUESTED")]) == "found=false", "another writer's change request stands"
 assert already(reviews=[approval("owner", state="CHANGES_REQUESTED"), approval("owner", at="2026-11-02T00:00:00Z")]) == "found=true"
+# The repository's own answer decides: a private org member reads as a contributor to the workflow's token
+# (lunareng/airlock-actions#46: the owner's approval was refused).
+private = {**approval("owner", assoc="CONTRIBUTOR"), "permission": "admin"}
+r = verdict("acme-airlock[bot]", reviews=[private])
+assert r.returncode == 0, "a private member with write access approves"
+assert already(reviews=[private]) == "found=true"
+r = verdict("acme-airlock[bot]", reviews=[{**approval("owner", assoc="MEMBER"), "permission": "read"}])
+assert r.returncode == 1, "a member with read access doesn't"
 r = verdict("acme-airlock[bot]", reviews=[approval("stranger", assoc="NONE")])
 assert r.returncode == 1, "a stranger's approval passes no agent's PR"
 r = verdict("acme-airlock[bot]", reviews=[approval("owner"), approval("second", state="CHANGES_REQUESTED")])
