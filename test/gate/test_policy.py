@@ -30,6 +30,8 @@ class World:
         self.calls = []
         self.missing_first = 0  # answer 404 for config.yaml this many times first
         self.fail_first = 0     # answer 502 to /v1/read this many times first
+        self.limited = {}       # path under contents/ -> [times left, code, headers]: a rate-limit answer first
+        self.forbidden = set()  # paths under contents/ answered with a plain 403
 
 
 def serve(world: World):
@@ -37,9 +39,11 @@ def serve(world: World):
         def log_message(self, *a):
             pass
 
-        def answer(self, code, body, raw=False):
+        def answer(self, code, body, raw=False, headers=None):
             data = body.encode() if raw else json.dumps(body).encode()
             self.send_response(code)
+            for k, v in (headers or {}).items():
+                self.send_header(k, v)
             self.end_headers()
             self.wfile.write(data)
 
@@ -56,6 +60,12 @@ def serve(world: World):
             prefix = "/repos/acme/policy/contents/"
             if self.path.startswith(prefix):
                 p = self.path[len(prefix):]
+                if world.limited.get(p, [0])[0]:
+                    world.limited[p][0] -= 1
+                    _, code, headers = world.limited[p]
+                    return self.answer(code, {"message": "You have exceeded a secondary rate limit."}, headers=headers)
+                if p in world.forbidden:
+                    return self.answer(403, {"message": "Resource not accessible by integration"})
                 if p == "config.yaml" and world.missing_first:
                     world.missing_first -= 1
                     return self.answer(404, {"message": "Not Found"})
@@ -167,5 +177,32 @@ errors = [l for l in r.stdout.splitlines() if l.startswith("::error")]
 assert r.returncode == 1 and cfg is None and errors == ["::error title=autonomy gate::acme/policy's config.yaml: floors has path; it takes only actions and paths; no policy, no gate"], errors
 assert ("DELETE", "/installation/token", f"Bearer {TOKEN}") in w.calls, "and the read is still ended"
 print("ok  config.yaml's floors pass through to the gate, and floors it can't read fail it")
+
+# A burst of gates reading role files at once gets GitHub's rate-limit 403 (lunareng/airlock-actions#42). That answer,
+# a 403 or 429 with retry-after or x-ratelimit-remaining 0, is retried with the same backoff; a plain 403 is the answer.
+ROLE = "roles/station/role.yaml"
+for code, headers in [(403, {"retry-after": "60"}), (403, {"x-ratelimit-remaining": "0"}), (429, {"retry-after": "1"})]:
+    w = World()
+    w.limited[ROLE] = [1, code, headers]
+    r, cfg, policy = run(w)
+    assert r.returncode == 0 and cfg and policy == POLICY, (code, headers, r.stdout + r.stderr)
+    assert sum(1 for c in w.calls if c[1].endswith("/contents/" + ROLE)) == 2, "read again once"
+    assert "acme-station[bot]" in cfg["agent_markers"]["logins"], "and the retried file is in the gate's config"
+w = World()
+w.limited[ROLE] = [3, 403, {"retry-after": "60"}]
+r, cfg, policy = run(w)
+errors = [l for l in r.stdout.splitlines() if l.startswith("::error")]
+assert r.returncode == 1 and cfg is None and policy is None, r.stdout
+assert errors == [f"::error title=autonomy gate::the policy repo (repos/acme/policy/contents/{ROLE}): HTTP 403, rate limited after 3 tries; no policy, no gate"], errors
+assert sum(1 for c in w.calls if c[1].endswith("/contents/" + ROLE)) == 3, "three tries, then the gate fails closed"
+assert ("DELETE", "/installation/token", f"Bearer {TOKEN}") in w.calls, "and the read is still ended"
+w = World()
+w.forbidden.add(ROLE)
+r, cfg, policy = run(w)
+errors = [l for l in r.stdout.splitlines() if l.startswith("::error")]
+assert r.returncode == 1 and cfg is None and policy is None, r.stdout
+assert errors == [f"::error title=autonomy gate::the policy repo (repos/acme/policy/contents/{ROLE}): HTTP 403; no policy, no gate"], errors
+assert sum(1 for c in w.calls if c[1].endswith("/contents/" + ROLE)) == 1, "a plain 403 is not retried"
+print("ok  a rate-limit 403 or 429 is retried before the gate fails closed; a plain 403 fails it at once")
 
 print("OK: 0 failing case(s)")

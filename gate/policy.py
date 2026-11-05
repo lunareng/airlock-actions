@@ -49,8 +49,16 @@ class Stop(Exception):
 
 
 # A 5xx or no answer is retried, after 2 and then 4 seconds: one blip at GitHub or Airlock shouldn't fail a PR.
-# Anything else, a 4xx included, is the answer.
+# So is a 403 or 429 that says it is a rate limit (a burst of gates reading role files, lunareng/airlock-actions#42).
+# Anything else, a plain 403 included, is the answer.
 TRIES, BACKOFF = 3, float(os.environ.get("AIRLOCK_GATE_BACKOFF", "2"))
+
+
+def _rate_limited(e: urllib.error.HTTPError) -> bool:
+    """GitHub's rate-limit answer: a 403 or 429 with retry-after, or with x-ratelimit-remaining 0."""
+    h = e.headers
+    return e.code in (403, 429) and h is not None and (
+        h.get("retry-after") is not None or (h.get("x-ratelimit-remaining") or "").strip() == "0")
 
 
 def _call(req: urllib.request.Request, what: str) -> bytes:
@@ -60,7 +68,10 @@ def _call(req: urllib.request.Request, what: str) -> bytes:
             with urllib.request.urlopen(req, timeout=20) as r:
                 return r.read()
         except urllib.error.HTTPError as e:
-            if e.code < 500 or last:
+            limited = _rate_limited(e)
+            if last and limited:
+                raise Stop(f"{what}: HTTP {e.code}, rate limited after {TRIES} tries") from None
+            if (e.code < 500 and not limited) or last:
                 raise _refusal(e.code, e.read(), what) from None
         except (urllib.error.URLError, TimeoutError) as e:
             if last:
