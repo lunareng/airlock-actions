@@ -18,6 +18,9 @@ CLI (a pull_request_review job, after its verdict; env GH_TOKEN, REPO, HEAD, RUN
   rerun.py --job <check name> --passed true|false [--wait-seconds N]
     Exit 0: nothing to re-run, or the push-time job was re-run (the summary names the run and the head).
     Exit 1: the re-run API refused, or the push-time run was still going after N seconds (the error names the run).
+  rerun.py --job <check name> --wait-only [--wait-seconds N]
+    Wait for the push-time run, re-running nothing. Exit 0 either way: a run still going after N seconds is a warning,
+    since the caller's verdict step then says what it can see.
 """
 import argparse
 import json
@@ -59,9 +62,12 @@ def gh(*args: str) -> str:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--job", required=True, help="the check's name: the push-time job to re-run")
-    ap.add_argument("--passed", required=True, choices=["true", "false"], help="this review-time job's verdict")
+    ap.add_argument("--passed", choices=["true", "false"], help="this review-time job's verdict")
+    ap.add_argument("--wait-only", action="store_true", help="wait for the push-time run and re-run nothing")
     ap.add_argument("--wait-seconds", type=int, default=300, help="how long to wait for a push-time run still going")
     a = ap.parse_args()
+    if not a.wait_only and a.passed is None:
+        ap.error("--passed is required without --wait-only")
     repo, head, run_id = os.environ["REPO"], os.environ["HEAD"], os.environ["RUN_ID"]
     passed = a.passed == "true"
 
@@ -76,12 +82,17 @@ def main() -> int:
         action, why = rerun_plan(passed, run, job)
         if action != "wait":
             break
+        if time.time() >= deadline and a.wait_only:
+            print(f"::warning::{why} after {a.wait_seconds}s; going on without it")
+            return 0
         if time.time() >= deadline:
             print(f"::error::{why} after {a.wait_seconds}s, so its row may not show this review; re-run gate run {run.get('id')} by hand")
             return 1
         print(why + "; waiting")
         time.sleep(15)
 
+    if a.wait_only:
+        return 0
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if action == "rerun":
         try:

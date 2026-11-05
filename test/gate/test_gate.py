@@ -253,6 +253,9 @@ assert rerun_plan(True, done, green)[0] == "none", "agreeing rows: nothing to re
 assert rerun_plan(False, done, red)[0] == "none", "a COMMENTED review on an unapproved PR re-runs nothing"
 assert rerun_plan(True, done, {"id": 9, "conclusion": "cancelled"})[0] == "rerun", "a cancelled push-time job is not a pass"
 assert rerun_plan(True, done, {"id": 9, "conclusion": "skipped"})[0] == "none", "a skipped job (a draft) stays skipped"
+import subprocess as _rsp  # noqa: E402
+_r = _rsp.run([sys.executable, "-I", str(Path(__file__).resolve().parents[2] / "gate" / "rerun.py"), "--job", "x"], capture_output=True, text=True)
+assert _r.returncode == 2 and "--passed is required" in _r.stderr, "only --wait-only goes without a verdict"
 assert rerun_plan(True, None, None)[0] == "none", "no pull_request run: this run's own verdict is the only one"
 assert rerun_plan(True, done, None)[0] == "none"
 assert rerun_plan(True, {"id": 2, "status": "in_progress"}, None)[0] == "wait", "a push-time run still going is waited for"
