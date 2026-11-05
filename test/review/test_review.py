@@ -230,15 +230,21 @@ ORDER = [st.get("name") or st.get("id") for st in REVIEW["runs"]["steps"]]
 assert ORDER.index("wait for the push-time review") < ORDER.index("verdict")
 assert "re-run the push-time check" not in ORDER, "actions: write stays off the job that runs a model over a PR"
 wait = NAMED["wait for the push-time review"]
-again = yaml.safe_load((ROOT / "review" / "rerun" / "action.yml").read_text())["runs"]["steps"][0]
+RERUN = yaml.safe_load((ROOT / "review" / "rerun" / "action.yml").read_text())
+assert "command -v gh" in RERUN["runs"]["steps"][0]["run"], "the lunareng-ci image ships no gh"
+assert "actions: write" in RERUN["description"] and "${{" not in RERUN["inputs"]["passed"]["description"]
+again = RERUN["runs"]["steps"][1]
+TEMPLATE = yaml.safe_load((ROOT / "adopt" / "templates" / "claude-review.yml").read_text())
+assert TEMPLATE["permissions"]["actions"] == "read" and TEMPLATE["jobs"]["rows"]["permissions"] == {"actions": "write", "pull-requests": "read"}
+assert TEMPLATE["jobs"]["rows"]["name"] != "claude-review" and "review/rerun@" in TEMPLATE["jobs"]["rows"]["steps"][0]["uses"]
+assert "needs.review.result == 'failure'" in TEMPLATE["jobs"]["rows"]["if"], "a cancelled review says nothing about the row"
 assert wait["if"] == "github.event_name == 'pull_request_review'" and "--wait-only" in wait["run"]
 assert again["env"]["PASSED"] == "${{ inputs.passed }}"
 assert "--job claude-review" in again["run"] and "${{" not in again["run"]
 assert again["run"].index(".head.sha") < again["run"].index("rerun.py"), "an old head's re-run must not cancel the new head's review"
 assert "actions: read" in REVIEW["description"]
 assert next(st for st in REVIEW["runs"]["steps"] if "actions/checkout" in st.get("uses", ""))["with"]["persist-credentials"] is False
-for _a in (REVIEW["description"], ):
-    assert "never give this job actions: write" in _a
+assert "never give this job actions: write" in REVIEW["description"]
 print("ok  a person's review waits for the push-time run and makes its row agree")
 
 print("OK: 0 failing case(s)")
