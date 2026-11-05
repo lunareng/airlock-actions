@@ -1,0 +1,27 @@
+name: claude review, the push-time row
+description: >
+  After a person's review, makes the push-time claude-review row say what the review-time run said, so a PR keeps one
+  answer (lunareng/autonomy#140). Run it as its own job, with permissions actions: write and pull-requests: read, after the
+  review job (needs: review, if: always() && github.event_name == 'pull_request_review'). It is a separate job so that
+  actions: write never reaches the job that runs a model over the PR. It must not be named claude-review.
+inputs:
+  passed:
+    description: "whether the review job passed: ${{ needs.review.result == 'success' }}"
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: re-run the push-time check
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        REPO: ${{ github.repository }}
+        HEAD: ${{ github.event.pull_request.head.sha }}
+        RUN_ID: ${{ github.run_id }}
+        PR: ${{ github.event.pull_request.number }}
+        PASSED: ${{ inputs.passed }}
+        GATE: ${{ github.action_path }}/../../gate
+      run: |
+        # A re-run joins the push's concurrency group, so re-running an old head's job could cancel the new head's review.
+        if [ "$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha)" != "$HEAD" ]; then echo "::notice::the PR has moved past $HEAD; nothing to re-run"; exit 0; fi
+        python3 -I "$GATE/rerun.py" --job claude-review --passed "$PASSED" --wait-seconds 60 || echo "::warning::could not re-run the push-time check; re-run it by hand"
