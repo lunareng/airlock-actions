@@ -609,6 +609,8 @@ def config_problems(cfg: dict) -> list[str]:
         missing = sorted(writes - set(probed))
         if missing:
             out.append(f"{f.relative_to(TOP)}: {', '.join(missing)} is in no router.yaml list, so it is never probed and a missing install there ends the pass")
+    if cfg.get("follow_through") and ((role_file(ROUTER_ROLE).get("writes") or {}).get("dispatch")) is not True:
+        out.append(f"roles/{ROUTER_ROLE}/role.yaml: follow_through re-runs need the Actions write that writes.dispatch: true grants")
     gr = (cfg.get("gate_rerun") or {}).get("repos") or []
     if gr:
         router = role_file(ROUTER_ROLE)
@@ -1001,9 +1003,11 @@ def lost_runner(jobs: list[dict]) -> bool:
     return bool(failed) and not any(s.get("conclusion") in ("failure", "timed_out") for j in failed for s in j.get("steps") or [])
 
 
-def follow_plan(pr: dict, latest: dict[str, dict], jobs: dict[int, list[dict]], comments: list[dict], workflow_pr: bool, cap: int) -> dict:
+def follow_plan(pr: dict, latest: dict[str, dict], jobs: dict[int, list[dict]], comments: list[dict], workflow_pr: bool, cap: int, approved: bool = False) -> dict:
     """What moves one open agent PR now: {"rerun": [run ids], "wake": a FOLLOW_WHY key or None, "stuck": [why]}.
-    `latest` is latest_pr_runs on its head, `jobs` each failed run's jobs, `workflow_pr` whether it changes a workflow.
+    `latest` is latest_pr_runs on its head, `jobs` each failed run's jobs, `workflow_pr` whether it changes a workflow,
+    `approved` whether a person approved this head: they took it from here, so a red review row only needs re-reading
+    (the review action reads a head with an approval, it doesn't review it again), and the role isn't woken for it.
     A run still going decides nothing but a conflict. A conflict outranks everything: no check on this head can merge it."""
     head = (pr.get("head") or {}).get("sha") or ""
     plan: dict = {"rerun": [], "wake": None, "stuck": []}
@@ -1035,9 +1039,11 @@ def follow_plan(pr: dict, latest: dict[str, dict], jobs: dict[int, list[dict]], 
         elif path == GATE_WORKFLOW:
             continue  # the gate's verdict is a level waiting on a person; gate_rerun re-scores it after a policy change
         elif path == REVIEW_WORKFLOW:
-            if workflow_pr:
+            if approved:
+                rerun(run, "stayed red after a person's approval")
+            elif workflow_pr:
                 continue  # by design: Claude's reviewer never runs on a workflow change, so a person's approval moves it
-            if verdict == "FAIL":
+            elif verdict == "FAIL":
                 plan["wake"] = plan["wake"] or "review-fail"
             else:
                 rerun(run, f"failed with {'a PASS' if verdict else 'no verdict'} on this head")
@@ -1046,6 +1052,11 @@ def follow_plan(pr: dict, latest: dict[str, dict], jobs: dict[int, list[dict]], 
     if not failed_any and latest and pr.get("mergeable_state") == "clean" and not pr.get("auto_merge") and not waits_on_person(pr):
         plan["wake"] = "green"
     return plan
+
+
+def person_approved(reviews: list[dict], sha: str) -> bool:
+    """A person's (not a bot's) approving review of this very commit, as the review action's verdict step reads it."""
+    return any(r.get("state") == "APPROVED" and r.get("commit_id") == sha and not ((r.get("user") or {}).get("login") or "[bot]").endswith("[bot]") for r in reviews)
 
 
 def pr_role(pr: dict, repo: str) -> str | None:
@@ -1104,10 +1115,11 @@ def main() -> int:
 
     @contextlib.contextmanager
     def guarded(where: str):
-        """A write GitHub refuses ends this repo's turn in this rule, and the pass goes on (autonomy#209)."""
+        """A write GitHub refuses, or a read it still won't answer after its retries, ends this repo's turn in this rule,
+        and the pass goes on (autonomy#209). It is listed and the pass exits 1, so an outage never reads as a quiet pass."""
         try:
             yield
-        except Refused as e:
+        except (Refused, SystemExit) as e:
             refused.append(f"{where}: {e}")
             print(f"::warning::{where}: {e}", file=sys.stderr)
 
@@ -1171,8 +1183,8 @@ def main() -> int:
                                    gh.get(f"repos/{repo}/issues/{n}/comments", per_page=100), logins)
                 if not plan:
                     continue
-                gh.write("POST", f"repos/{POLICY_REPO}/actions/workflows/role-{role}.yml/dispatches", {"ref": "main", "inputs": dispatch_inputs(plan["signal"], "review", repo, n)})
                 gh.write("POST", f"repos/{repo}/issues/{n}/comments", {"body": f"Review ({plan['kind']}) seen; the `{role}` role is starting on it (signal = this PR). It answers each thread, pushes, and re-requests review. {REVIEW_MARK.format(id=plan['id'])}" + FOOTER})
+                gh.write("POST", f"repos/{POLICY_REPO}/actions/workflows/role-{role}.yml/dispatches", {"ref": "main", "inputs": dispatch_inputs(plan["signal"], "review", repo, n)})
                 report["dispatched"].append(f"{repo}#{n} review -> {role}")
                 started.add(role)
                 report["latency_hours"].append(round((now - ts(plan["at"])).total_seconds() / 3600, 1))
@@ -1410,10 +1422,11 @@ def main() -> int:
                     latest = latest_pr_runs(got.get("workflow_runs", []) if isinstance(got, dict) else [], sha)
                     jobs = {r["id"]: gh.get(f"repos/{repo}/actions/runs/{r['id']}/jobs", per_page=100).get("jobs", [])
                             for r in latest.values() if r.get("conclusion") in FAILED_RUN}
-                    workflow_pr = REVIEW_WORKFLOW in latest and latest[REVIEW_WORKFLOW].get("conclusion") in FAILED_RUN and any(
-                        f["filename"].startswith(".github/workflows/") for f in gh.get(f"repos/{repo}/pulls/{n}/files", per_page=100))
+                    review_red = REVIEW_WORKFLOW in latest and latest[REVIEW_WORKFLOW].get("conclusion") in FAILED_RUN
+                    workflow_pr = review_red and any(f["filename"].startswith(".github/workflows/") for f in gh.get(f"repos/{repo}/pulls/{n}/files", per_page=100))
+                    approved = review_red and person_approved(gh.get(f"repos/{repo}/pulls/{n}/reviews", per_page=100), sha)
                     comments = gh.get(f"repos/{repo}/issues/{n}/comments", per_page=100)
-                    plan = follow_plan(pr, latest, jobs, comments, workflow_pr, cap)
+                    plan = follow_plan(pr, latest, jobs, comments, workflow_pr, cap, approved)
                     report["follow_through"] += [f"{repo}#{n}: {why}" for why in plan["stuck"]]
                     for run_id in plan["rerun"]:
                         if left <= 0:
@@ -1428,8 +1441,9 @@ def main() -> int:
                     why, role = plan["wake"], pr_role(pr, repo)
                     if not why or not role or role in started or follow_marked(comments, sha, why) or role_busy(role):
                         continue
-                    gh.write("POST", f"repos/{POLICY_REPO}/actions/workflows/role-{role}.yml/dispatches", {"ref": "main", "inputs": dispatch_inputs(pr.get("html_url", ""), f"follow-through ({why})", repo, n)})
+                    # The marker first: a refused comment starts nothing, so the next pass can't start the role again.
                     gh.write("POST", f"repos/{repo}/issues/{n}/comments", {"body": f"The `{role}` role is starting on this PR: {FOLLOW_WHY[why]}. {FOLLOW_MARK.format(sha=sha, why=why)}" + FOOTER})
+                    gh.write("POST", f"repos/{POLICY_REPO}/actions/workflows/role-{role}.yml/dispatches", {"ref": "main", "inputs": dispatch_inputs(pr.get("html_url", ""), f"follow-through {why}", repo, n)})
                     report["dispatched"].append(f"{repo}#{n} follow-through ({why}) -> {role}")
                     started.add(role)
 
