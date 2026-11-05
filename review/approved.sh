@@ -5,14 +5,20 @@
 # author_association depends on who is asking: a private org member reads as a contributor to the workflow's token.
 # env: GH_TOKEN, REPO, PR, SHA
 set -uo pipefail
+# Every page first, then each person's latest: per-page grouping would keep an approval a later page takes back.
 reviews="$(gh api --paginate "repos/$REPO/pulls/$PR/reviews?per_page=100" \
-  --jq '[.[] | select(((.user.login // "[bot]") | endswith("[bot]") | not) and (.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED"))] | group_by(.user.login) | map(max_by(.submitted_at)) | .[] | "\(.user.login) \(.state) \(.commit_id)"')" || exit 1
+  --jq '.[] | select(((.user.login // "[bot]") | endswith("[bot]") | not) and (.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED")) | "\(.submitted_at) \(.user.login) \(.state) \(.commit_id)"')" || exit 1
+latest="$(printf '%s\n' "$reviews" | sort | awk 'NF { last[$2] = $2 " " $3 " " $4 } END { for (k in last) print last[k] }')"
 ok=1
 while read -r login state commit; do
   [ -n "${login:-}" ] || continue
-  permission="$(gh api "repos/$REPO/collaborators/$login/permission" --jq .permission 2>/dev/null)" || permission=none
+  # A lookup that fails decides nothing: it could be hiding a change still requested.
+  if ! permission="$(gh api "repos/$REPO/collaborators/$login/permission" --jq .permission)"; then
+    echo "::warning::could not read $login's permission on $REPO, so no approval counts on this run"
+    exit 1
+  fi
   case "$permission" in admin|maintain|write) ;; *) continue ;; esac
   if [ "$state" = CHANGES_REQUESTED ]; then exit 1; fi
   if [ "$state" = APPROVED ] && [ "$commit" = "$SHA" ]; then ok=0; fi
-done <<< "$reviews"
+done <<< "$latest"
 exit "$ok"
