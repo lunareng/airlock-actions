@@ -1006,8 +1006,9 @@ def lost_runner(jobs: list[dict]) -> bool:
 def follow_plan(pr: dict, latest: dict[str, dict], jobs: dict[int, list[dict]], comments: list[dict], workflow_pr: bool, cap: int, approved: bool = False) -> dict:
     """What moves one open agent PR now: {"rerun": [run ids], "wake": a FOLLOW_WHY key or None, "stuck": [why]}.
     `latest` is latest_pr_runs on its head, `jobs` each failed run's jobs, `workflow_pr` whether it changes a workflow,
-    `approved` whether a person approved this head: they took it from here, so a red review row only needs re-reading
-    (the review action reads a head with an approval, it doesn't review it again), and the role isn't woken for it.
+    `approved` whether a writer approved this head: they took it from here, so a red review row only needs re-reading
+    (the review action's `already` step reads an agent's approved head, it doesn't review it again), and the role isn't
+    woken for it.
     A run still going decides nothing but a conflict. A conflict outranks everything: no check on this head can merge it."""
     head = (pr.get("head") or {}).get("sha") or ""
     plan: dict = {"rerun": [], "wake": None, "stuck": []}
@@ -1055,14 +1056,29 @@ def follow_plan(pr: dict, latest: dict[str, dict], jobs: dict[int, list[dict]], 
 
 
 def person_approved(reviews: list[dict], sha: str) -> bool:
-    """A person's (not a bot's) approving review of this very commit, as the review action's verdict step reads it."""
-    return any(r.get("state") == "APPROVED" and r.get("commit_id") == sha and not ((r.get("user") or {}).get("login") or "[bot]").endswith("[bot]") for r in reviews)
+    """A writer's approval of this very commit, as the review action's verdict step and Airlock's gate read it: each
+    writer's latest review that says anything (OWNER, MEMBER or COLLABORATOR; never a bot or a deleted account), with no
+    change still requested. Anyone can review a public repository, so a stranger's approval is none. It only ever
+    earns a re-run here: the verdict step decides the check."""
+    latest: dict[str, dict] = {}
+    for r in sorted(reviews, key=lambda r: r.get("submitted_at") or ""):
+        who = (r.get("user") or {}).get("login") or "[bot]"
+        if not who.endswith("[bot]") and r.get("author_association") in ("OWNER", "MEMBER", "COLLABORATOR") and r.get("state") in ("APPROVED", "CHANGES_REQUESTED", "DISMISSED"):
+            latest[who] = r
+    if any(r["state"] == "CHANGES_REQUESTED" for r in latest.values()):
+        return False
+    return any(r["state"] == "APPROVED" and r.get("commit_id") == sha for r in latest.values())
 
 
 def pr_role(pr: dict, repo: str) -> str | None:
-    """The role to wake for a PR: the one its `agent/<role>/` branch names when that role has a file, else the repo's owner."""
+    """The role to wake for a PR. A branch name is a claim anyone with push can make, so `agent/<role>/` counts only for an
+    agent role that writes this repo and whose PR this really is (is_roles_pr: its login, a same-repo head); a `kind:
+    workflow` role is never started this way. Anything else wakes the repo's owner."""
     m = re.match(r"agent/([a-z][a-z0-9-]*)/", (pr.get("head") or {}).get("ref") or "")
-    return m.group(1) if m and role_file(m.group(1)) else owner_role(repo)
+    doc = role_file(m.group(1)) if m else {}
+    if doc and doc.get("kind") != "workflow" and repo in role_repos(m.group(1)) and is_roles_pr(pr, m.group(1), (doc.get("identity") or {}).get("github_login")):
+        return m.group(1)
+    return owner_role(repo)
 
 
 def follow_marked(comments: list[dict], sha: str, why: str) -> bool:
@@ -1122,6 +1138,17 @@ def main() -> int:
         except (Refused, SystemExit) as e:
             refused.append(f"{where}: {e}")
             print(f"::warning::{where}: {e}", file=sys.stderr)
+
+    def start_with_mark(repo: str, n: int, role: str, inputs: dict, body: str) -> None:
+        """The marker comment, then the dispatch. A refused comment starts nothing, so the next pass can't start the role
+        again; a refused dispatch takes its comment back, so the next pass tries again and the wake isn't lost."""
+        made = gh.write("POST", f"repos/{repo}/issues/{n}/comments", {"body": body})
+        try:
+            gh.write("POST", f"repos/{POLICY_REPO}/actions/workflows/role-{role}.yml/dispatches", {"ref": "main", "inputs": inputs})
+        except Refused:
+            if made.get("id"):
+                gh.attempt("DELETE", f"repos/{repo}/issues/comments/{made['id']}", {})
+            raise
 
     def role_busy(role: str) -> bool:
         """A run of the role is queued or running: starting another would cancel it (per-role concurrency)."""
@@ -1183,8 +1210,8 @@ def main() -> int:
                                    gh.get(f"repos/{repo}/issues/{n}/comments", per_page=100), logins)
                 if not plan:
                     continue
-                gh.write("POST", f"repos/{repo}/issues/{n}/comments", {"body": f"Review ({plan['kind']}) seen; the `{role}` role is starting on it (signal = this PR). It answers each thread, pushes, and re-requests review. {REVIEW_MARK.format(id=plan['id'])}" + FOOTER})
-                gh.write("POST", f"repos/{POLICY_REPO}/actions/workflows/role-{role}.yml/dispatches", {"ref": "main", "inputs": dispatch_inputs(plan["signal"], "review", repo, n)})
+                start_with_mark(repo, n, role, dispatch_inputs(plan["signal"], "review", repo, n),
+                                f"Review ({plan['kind']}) seen; the `{role}` role is starting on it (signal = this PR). It answers each thread, pushes, and re-requests review. {REVIEW_MARK.format(id=plan['id'])}" + FOOTER)
                 report["dispatched"].append(f"{repo}#{n} review -> {role}")
                 started.add(role)
                 report["latency_hours"].append(round((now - ts(plan["at"])).total_seconds() / 3600, 1))
@@ -1441,9 +1468,8 @@ def main() -> int:
                     why, role = plan["wake"], pr_role(pr, repo)
                     if not why or not role or role in started or follow_marked(comments, sha, why) or role_busy(role):
                         continue
-                    # The marker first: a refused comment starts nothing, so the next pass can't start the role again.
-                    gh.write("POST", f"repos/{repo}/issues/{n}/comments", {"body": f"The `{role}` role is starting on this PR: {FOLLOW_WHY[why]}. {FOLLOW_MARK.format(sha=sha, why=why)}" + FOOTER})
-                    gh.write("POST", f"repos/{POLICY_REPO}/actions/workflows/role-{role}.yml/dispatches", {"ref": "main", "inputs": dispatch_inputs(pr.get("html_url", ""), f"follow-through {why}", repo, n)})
+                    start_with_mark(repo, n, role, dispatch_inputs(pr.get("html_url", ""), f"follow-through {why}", repo, n),
+                                    f"The `{role}` role is starting on this PR: {FOLLOW_WHY[why]}. {FOLLOW_MARK.format(sha=sha, why=why)}" + FOOTER)
                     report["dispatched"].append(f"{repo}#{n} follow-through ({why}) -> {role}")
                     started.add(role)
 
