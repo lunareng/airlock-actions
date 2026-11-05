@@ -70,7 +70,7 @@ def verdict(author: str, reviews=(), comments=(), workflow_change=False, agents=
 
 
 claude = lambda body: {"user": {"login": "claude[bot]"}, "body": body}  # noqa: E731
-approval = lambda who, sha=SHA, state="APPROVED": {"user": {"login": who}, "commit_id": sha, "state": state, "id": 1}  # noqa: E731
+approval = lambda who, sha=SHA, state="APPROVED", assoc="MEMBER", at="2026-11-01T00:00:00Z": {"user": {"login": who}, "commit_id": sha, "state": state, "id": 1, "author_association": assoc, "submitted_at": at}  # noqa: E731
 
 r = verdict("acme-airlock[bot]", comments=[claude(f"looks fine\n\nVerdict: PASS ({SHA})\n")])
 assert r.returncode == 0 and "PASS" in r.stdout, r.stdout + r.stderr
@@ -211,19 +211,33 @@ assert already([claude(f"Verdict: PASS ({'b' * 40})")]) == "found=false", "a new
 assert already(reviews=[approval("other[bot]")]) == "found=false", "a bot's approval isn't a person's"
 for sid in ("prompt", "review", "posted", "review-again"):
     assert "steps.already.outputs.found != 'true'" in STEPS[sid]["if"], f"{sid} must not run on a head that has its answer"
+# Only a writer's latest word counts: anyone can review a public repository.
+assert already(reviews=[approval("stranger", assoc="NONE")]) == "found=false"
+assert already(reviews=[approval("stranger", assoc="CONTRIBUTOR")]) == "found=false"
+assert already(reviews=[approval("owner"), approval("owner", state="CHANGES_REQUESTED", at="2026-11-02T00:00:00Z")]) == "found=false", "a later change request takes it back"
+assert already(reviews=[approval("owner"), approval("second", state="CHANGES_REQUESTED")]) == "found=false", "another writer's change request stands"
+assert already(reviews=[approval("owner", state="CHANGES_REQUESTED"), approval("owner", at="2026-11-02T00:00:00Z")]) == "found=true"
+r = verdict("acme-airlock[bot]", reviews=[approval("stranger", assoc="NONE")])
+assert r.returncode == 1, "a stranger's approval passes no agent's PR"
+r = verdict("acme-airlock[bot]", reviews=[approval("owner"), approval("second", state="CHANGES_REQUESTED")])
+assert r.returncode == 1, "nor does an approval with a change still requested"
 print("ok  a head that passed, or an agent's head a person approved, is read, not reviewed again")
 
 # A person's review waits for the push-time run, then makes its row agree, whatever this run's verdict was.
 NAMED = {st.get("name"): st for st in REVIEW["runs"]["steps"]}
 ORDER = [st.get("name") or st.get("id") for st in REVIEW["runs"]["steps"]]
-assert ORDER.index("wait for the push-time review") < ORDER.index("verdict") < ORDER.index("re-run the push-time check")
-wait, again = NAMED["wait for the push-time review"], NAMED["re-run the push-time check"]
+assert ORDER.index("wait for the push-time review") < ORDER.index("verdict")
+assert "re-run the push-time check" not in ORDER, "actions: write stays off the job that runs a model over a PR"
+wait = NAMED["wait for the push-time review"]
+again = yaml.safe_load((ROOT / "review" / "rerun" / "action.yml").read_text())["runs"]["steps"][0]
 assert wait["if"] == "github.event_name == 'pull_request_review'" and "--wait-only" in wait["run"]
-assert again["if"] == "always() && github.event_name == 'pull_request_review'", "a failing verdict still updates the row"
-assert again["env"]["PASSED"] == "${{ steps.verdict.outcome == 'success' }}" and NAMED["verdict"]["id"] == "verdict"
+assert again["env"]["PASSED"] == "${{ inputs.passed }}"
 assert "--job claude-review" in again["run"] and "${{" not in again["run"]
 assert again["run"].index(".head.sha") < again["run"].index("rerun.py"), "an old head's re-run must not cancel the new head's review"
-assert "actions: write" in REVIEW["description"]
+assert "actions: read" in REVIEW["description"]
+assert next(st for st in REVIEW["runs"]["steps"] if "actions/checkout" in st.get("uses", ""))["with"]["persist-credentials"] is False
+for _a in (REVIEW["description"], ):
+    assert "never give this job actions: write" in _a
 print("ok  a person's review waits for the push-time run and makes its row agree")
 
 print("OK: 0 failing case(s)")

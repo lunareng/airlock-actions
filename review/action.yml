@@ -1,5 +1,5 @@
 name: claude review
-description: 'Claude reviews the pull request against the autonomy charter (signal, intent, floors, proof, secrets, goals) and ends its comment with a verdict on the head commit, which the last step turns into this job''s result. The verdict binds agents'' PRs; anyone else''s gets it as a warning. Run it as the steps of a job named claude-review, with permissions contents: read, pull-requests: write, issues: write, id-token: write, actions: write (a person''s review re-runs the push-time job, so the PR''s rows agree).'
+description: 'Claude reviews the pull request against the autonomy charter (signal, intent, floors, proof, secrets, goals) and ends its comment with a verdict on the head commit, which the last step turns into this job''s result. The verdict binds agents'' PRs; anyone else''s gets it as a warning. Run it as the steps of a job named claude-review, with permissions contents: read, pull-requests: write, issues: write, id-token: write, actions: read. A separate job on review/rerun, with only actions: write, makes the push-time row agree after a person''s review; never give this job actions: write, since it runs a model over the PR.'
 inputs:
   claude-code-oauth-token:
     description: the token Claude Code runs on (pass secrets.CLAUDE_CODE_OAUTH_TOKEN)
@@ -23,6 +23,7 @@ runs:
   - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
     with:
       fetch-depth: 0
+      persist-credentials: false # the reviewer reads this checkout; it has no business holding the job's token
   # gh before the reviewer: it reads the diff and posts its verdict with gh, so on a runner without gh a review
   # posts nothing and every agent's PR fails (lunareng/autonomy#104).
   - name: gh (when the runner image ships none; pinned checksum)
@@ -73,7 +74,7 @@ runs:
       agents="${AGENTS//[/\\[}"; agents="${agents//]/\\]}"
       a=0
       # shellcheck disable=SC2254 # a pattern on purpose
-      case "$AUTHOR" in $agents) a="$(gh api --paginate "repos/$REPO/pulls/$PR/reviews?per_page=100" --jq ".[] | select(.state == \"APPROVED\" and .commit_id == \"$SHA\" and (.user.login | endswith(\"[bot]\") | not)) | .id" | wc -l)" ;; esac
+      case "$AUTHOR" in $agents) a="$(gh api --paginate "repos/$REPO/pulls/$PR/reviews?per_page=100" --jq '[.[] | select(((.user.login // "[bot]") | endswith("[bot]") | not) and (.author_association == "OWNER" or .author_association == "MEMBER" or .author_association == "COLLABORATOR") and (.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED"))] | group_by(.user.login) | map(max_by(.submitted_at)) | if any(.[]; .state == "CHANGES_REQUESTED") then empty else .[] | select(.state == "APPROVED" and .commit_id == "'"$SHA"'") | .id end' | wc -l)" ;; esac
       if [ "$n" -gt 0 ] || [ "$a" -gt 0 ]; then echo "found=true" >> "$GITHUB_OUTPUT"; echo "::notice::this head already passed, or a person approved it; reading that, not reviewing again"; else echo "found=false" >> "$GITHUB_OUTPUT"; fi
   # The reviewer's prompt, built once from the PR's values (passed through env, never expanded in a script) so both
   # attempts below read the same text.
@@ -159,11 +160,10 @@ runs:
       RUN_ID: ${{ github.run_id }}
       WAIT: ${{ inputs.rerun-wait-seconds }}
       GATE: ${{ github.action_path }}/../gate
-    run: python3 -I "$GATE/rerun.py" --job claude-review --wait-only --wait-seconds "$WAIT" || echo "::warning::could not read the push-time run (does this job have actions:write?)"
+    run: python3 -I "$GATE/rerun.py" --job claude-review --wait-only --wait-seconds "$WAIT" || echo "::warning::could not read the push-time run (does this job have actions:read?)"
   # The verdict step: academy#117's judge rounds (only claude[bot]'s comments, only this head, the last line matched
   # whole) and api#1086 (claude-code-action's token exchange refuses a PR that changes a workflow).
   - name: verdict
-    id: verdict
     env:
       GH_TOKEN: ${{ github.token }}
       ONLY_DOCS: ${{ steps.docs.outputs.only }}
@@ -176,10 +176,12 @@ runs:
     run: |
       set -euo pipefail
       if [ "$ONLY_DOCS" = "true" ]; then echo "PASS (Markdown-only PR by a person)"; exit 0; fi
-      # A person's (not a bot's) approving review on this exact commit, across every page of reviews.
+      # A writer's approving review of this exact commit: each writer's latest review that says anything (OWNER, MEMBER or
+      # COLLABORATOR, as Airlock's gate reads it; never a bot or a deleted account), with no change still requested.
+      # Anyone can review a public repository, so a stranger's approval is none.
       approved() {
         [ -n "$(gh api --paginate "repos/$REPO/pulls/$PR/reviews?per_page=100" \
-          --jq ".[] | select(.state == \"APPROVED\" and .commit_id == \"$SHA\" and (.user.login | endswith(\"[bot]\") | not)) | .id")" ]
+          --jq '[.[] | select(((.user.login // "[bot]") | endswith("[bot]") | not) and (.author_association == "OWNER" or .author_association == "MEMBER" or .author_association == "COLLABORATOR") and (.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED"))] | group_by(.user.login) | map(max_by(.submitted_at)) | if any(.[]; .state == "CHANGES_REQUESTED") then empty else .[] | select(.state == "APPROVED" and .commit_id == "'"$SHA"'") | .id end')" ]
       }
       # When there is no Claude verdict, say why on the PR itself, once per commit: a notice in this log is read by
       # nobody, and a green check with no comment looks like a review that happened.
@@ -226,21 +228,3 @@ runs:
           echo "::warning::$result; this PR is not an agent's, so the person merging it is its reviewer"; exit 0 ;;
       esac
     shell: bash
-  # GitHub keeps one row per event, so a person's approval used to add a green row beside the push's stale red one, and
-  # the PR stayed blocked until someone re-ran the push (lunareng/autonomy#140: an hour, by hand). As the gate does
-  # (autonomy#157), make the push-time row say what this run says; with the `already` step above, that re-run only reads.
-  - name: re-run the push-time check
-    if: always() && github.event_name == 'pull_request_review'
-    shell: bash
-    env:
-      GH_TOKEN: ${{ github.token }}
-      REPO: ${{ github.repository }}
-      HEAD: ${{ github.event.pull_request.head.sha }}
-      RUN_ID: ${{ github.run_id }}
-      PR: ${{ github.event.pull_request.number }}
-      PASSED: ${{ steps.verdict.outcome == 'success' }}
-      GATE: ${{ github.action_path }}/../gate
-    run: |
-      # A re-run joins the push's concurrency group, so re-running an old head's job could cancel the new head's review.
-      if [ "$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha)" != "$HEAD" ]; then echo "::notice::the PR has moved past $HEAD; nothing to re-run"; exit 0; fi
-      python3 -I "$GATE/rerun.py" --job claude-review --passed "$PASSED" --wait-seconds 60 || echo "::warning::could not re-run the push-time check (does this job have actions:write?); re-run it by hand"
