@@ -30,6 +30,8 @@ path = next(a for a in args if a.startswith("repos/"))
 expr = args[args.index("--jq") + 1]
 if "/collaborators/" in path:
     login = path.split("/collaborators/")[1].split("/")[0]
+    if login == "unreadable":
+        sys.exit(1)
     rs = [r for r in json.load(open(os.environ["CANNED"]))["reviews"] if r["user"]["login"] == login]
     writer = rs and rs[-1].get("author_association") in ("OWNER", "MEMBER", "COLLABORATOR")
     permission = rs[-1].get("permission", "write" if writer else "read") if rs else "none"
@@ -233,6 +235,13 @@ assert r.returncode == 0, "a private member with write access approves"
 assert already(reviews=[private]) == "found=true"
 r = verdict("acme-airlock[bot]", reviews=[{**approval("owner", assoc="MEMBER"), "permission": "read"}])
 assert r.returncode == 1, "a member with read access doesn't"
+# A permission it can't read decides nothing, and hides no change requested.
+r = verdict("acme-airlock[bot]", reviews=[approval("owner"), approval("unreadable", state="CHANGES_REQUESTED")])
+assert r.returncode == 1, "a lookup that fails counts no approval"
+# Each person's latest across every page: an approval on page one taken back on page two is no approval.
+filler = [approval(f"reader{i}", assoc="NONE", state="COMMENTED", at="2026-11-01T00:00:00Z") for i in range(100)]
+r = verdict("acme-airlock[bot]", reviews=[approval("owner"), *filler, approval("owner", state="DISMISSED", at="2026-11-03T00:00:00Z")])
+assert r.returncode == 1, "a later page's DISMISSED takes back an earlier page's APPROVED"
 r = verdict("acme-airlock[bot]", reviews=[approval("stranger", assoc="NONE")])
 assert r.returncode == 1, "a stranger's approval passes no agent's PR"
 r = verdict("acme-airlock[bot]", reviews=[approval("owner"), approval("second", state="CHANGES_REQUESTED")])
