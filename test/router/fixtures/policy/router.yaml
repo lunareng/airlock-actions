@@ -29,3 +29,7 @@ ci_main:
   acme/web: product:core
   acme/sim-shop: product:shop
   acme/sim-clinic: product:clinic
+follow_through:
+  rerun_cap: 2
+  max_per_pass: 20
+pr_waiting_budget: 3

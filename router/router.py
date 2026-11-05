@@ -37,7 +37,7 @@ Rules (router.yaml says where each applies):
                 that answers proposals ("1 yes, 2 no") starts router.yaml's digest_answers.role with that comment as
                 its signal, once per comment (a marker comment records which). That role writes each answer into
                 a decisions log.
-  ci_main       A failing workflow on a repo's main (latest completed run) gets one open issue per workflow,
+  ci_main       A failing workflow on a repo's main (latest completed push or scheduled run) gets one open issue per workflow,
                 `CI: <workflow> failing on main`, labelled ci-failure + type:bug. When the latest run of that
                 workflow on main is green again, the router closes its own issue with a comment. Decided
                 2026-10-20: these are the only issues the router closes.
@@ -68,6 +68,17 @@ Rules (router.yaml says where each applies):
                 a PR with no gate run on its head is listed; a refused re-run is listed with its error and fails
                 the pass once every rule has run. A re-run's start time is its marker: the next pass writes nothing.
                 The policy repo's gate-rerun workflow starts a pass on every such push, so it needn't wait for the clock.
+  follow_through Each open agent PR in the reviews repos moves between its role's runs. A run that lost its runner (a
+                failed job with no failed step) or a claude-review that failed with no verdict, or with a PASS on this
+                head, is re-run, at most `rerun_cap` times a run. The role is started, once per head and reason (a marker
+                comment records which), when a check fails for a real reason, the verdict on this head is FAIL, the
+                branch conflicts, or an L3/L4 PR is mergeable with auto-merge off. What only a person can move is left:
+                an agent's workflow PR with no approval, and the gate on an L1/L2 PR. One start per role per pass, never
+                while a run of that role is queued or running; at most `max_per_pass` re-runs a pass.
+
+A repo a rule names and the router's role can't write is skipped with a warning, as an unreadable repo is. A write GitHub
+refuses at run time ends only that repo's turn in that rule: every other repo and rule still runs, the refusal is in the
+report, and the pass exits 1 at its end (autonomy#209: one 403 stopped eight rules for five days).
 
 Report: a JSON summary, including routed_within_1h (share of signals that had their issue within an hour of
 the signal), the router's own judge number.
@@ -77,6 +88,7 @@ the signal), the router's own judge number.
 Before a pass it checks router.yaml against the policy repo (config_problems) and routes nothing if any check fails.
 """
 import argparse
+import contextlib
 import functools
 import json
 import os
@@ -110,6 +122,13 @@ OVERRIDE_REASON_RE = re.compile(r"^\s*Override:\s*(\S.*?)\s*$", re.M | re.I)
 REVIEWER_LOGIN = "claude[bot]"  # the review action's verdicts (lunareng/airlock-actions review) come from Claude's App
 ANSWER_RE = re.compile(r"\b(\d+|all)\s*[:.)-]?\s*(yes|no|y|n)\b", re.I)
 GATE_WORKFLOW = ".github/workflows/autonomy-gate.yml"
+REVIEW_WORKFLOW = ".github/workflows/claude-review.yml"
+REVIEW_JOB = "claude-review"
+FOLLOW_MARK = "<!-- router:follow-through head={sha} why={why} -->"
+FOLLOW_WHY = {"ci-failed": "a check failed on this head", "review-fail": "the review's verdict on this head is FAIL",
+              "conflict": "the branch conflicts with its base", "green": "it is mergeable and nothing has armed auto-merge"}
+FAILED_RUN = ("failure", "timed_out", "startup_failure")
+PERSON_LEVELS = {"level:L1", "level:L2"}  # the gate's labels: a person merges these
 POLICY_FILE_RE = re.compile(r"repos/([A-Za-z0-9._-]+)\.yaml")
 ROLE_PATH_RE = re.compile(r"roles/([a-z][a-z0-9-]*)/")
 
@@ -275,9 +294,21 @@ def budget_for(role: str, cfg_budget) -> int:
     return int(cfg_budget or 2)
 
 
+def waits_on_person(pr: dict) -> bool:
+    """An L1 or L2 PR (the gate's label) moves when a person approves it, not when the role works it."""
+    return bool(PERSON_LEVELS & labels_of(pr))
+
+
 def role_open_count(role: str, own_login: str | None, repos: list[str], prs_by_repo: dict[str, list[dict]]) -> int:
-    """The role's open PRs across every repo it writes to: its budget is per role, not per repo."""
-    return sum(is_roles_pr(p, role, own_login) for r in repos for p in prs_by_repo.get(r, []))
+    """The open PRs the role itself has to move, across every repo it writes to: its budget is per role, not per repo.
+    One that waits on a person holds no slot, or a role's work stops whenever the owner is away (the loop audit,
+    2026-11-05: nine api requests queued behind an approved PR); role_waiting_count bounds those."""
+    return sum(is_roles_pr(p, role, own_login) and not waits_on_person(p) for r in repos for p in prs_by_repo.get(r, []))
+
+
+def role_waiting_count(role: str, own_login: str | None, repos: list[str], prs_by_repo: dict[str, list[dict]]) -> int:
+    """The role's open PRs that wait on a person: router.yaml's pr_waiting_budget is the most it may leave there."""
+    return sum(is_roles_pr(p, role, own_login) and waits_on_person(p) for r in repos for p in prs_by_repo.get(r, []))
 
 
 def airlock_login(config: Path | None = None) -> str | None:
@@ -373,6 +404,10 @@ def resume_plan(role: str, logins: set[str], own_login: str | None, issue: dict,
 
 # ---------- GitHub ----------
 
+class Refused(Exception):
+    """GitHub refused a write. It ends that repo's turn in that rule, never the pass (autonomy#209)."""
+
+
 class GitHub:
     def __init__(self, dry_run: bool):
         self.dry_run = dry_run
@@ -422,7 +457,7 @@ class GitHub:
             return {}
         out = subprocess.run(["gh", "api", "-X", method, path, "--input", "-"], input=json.dumps(body), capture_output=True, text=True)
         if out.returncode != 0:
-            raise SystemExit(f"gh api {method} {path}: {out.stderr.strip()}")
+            raise Refused(f"gh api {method} {path}: {out.stderr.strip()}")
         return json.loads(out.stdout) if out.stdout.strip() else {}
 
     def attempt(self, method: str, path: str, body: dict) -> str | None:
@@ -467,8 +502,18 @@ def without_repos(cfg: dict, skip: set[str]) -> dict:
     return out
 
 
-KNOWN_KEYS = {"product_bugs", "tool_requests", "tool_request_label", "reviews", "delivered", "resume", "pr_budget", "digest_answers",
-              "override", "deployer_login", "clock_login", "gate_rerun", "run_failed", "ci_main"}
+def unwritable_repos(cfg: dict) -> list[str]:
+    """The repos a writing rule names that the router's role doesn't list in writes.repos. Its token may still read
+    them (a public repo), so only the first write would find out (autonomy#209). main() skips them as it skips an
+    unreadable repo; gate_rerun's own check in config_problems stays fatal, since a re-run needs Actions write."""
+    writes = set((role_file(ROUTER_ROLE).get("writes") or {}).get("repos") or [])
+    named = {*(product_bugs(cfg).get("repos") or []), *(cfg.get("tool_requests") or []), *(cfg.get("reviews") or []),
+             *(cfg.get("ci_main") or {}).keys(), *(cfg.get("run_failed") or [])}
+    return sorted(named - writes)
+
+
+KNOWN_KEYS = {"product_bugs", "tool_requests", "tool_request_label", "reviews", "delivered", "resume", "pr_budget", "pr_waiting_budget",
+              "digest_answers", "override", "deployer_login", "clock_login", "gate_rerun", "run_failed", "ci_main", "follow_through"}
 
 
 def is_date(d) -> bool:
@@ -528,6 +573,14 @@ def shape_problems(cfg: dict) -> list[str]:
     if pb is not None and not (isinstance(pb, int) and not isinstance(pb, bool)) and not (
             isinstance(pb, dict) and all(isinstance(n, int) and not isinstance(n, bool) for n in pb.values())):
         out.append("router.yaml: `pr_budget` is a number, or a mapping of role (or `default`) to number")
+    pw = cfg.get("pr_waiting_budget")
+    if pw is not None and not (isinstance(pw, int) and not isinstance(pw, bool)):
+        out.append("router.yaml: `pr_waiting_budget` is a number")
+    ft = cfg.get("follow_through")
+    if ft is not None and not isinstance(ft, bool) and not (
+            isinstance(ft, dict) and set(ft) <= {"rerun_cap", "max_per_pass"}
+            and all(isinstance(n, int) and not isinstance(n, bool) for n in ft.values())):
+        out.append("router.yaml: `follow_through` is true, false or {rerun_cap: <number>, max_per_pass: <number>}")
     da = cfg.get("digest_answers")
     if da and not (isinstance(da, dict) and isinstance(da.get("role"), str) and da["role"]):
         out.append("router.yaml: digest_answers names the role its answers start: {role: <role>}")
@@ -931,6 +984,82 @@ def gate_rerun_plan(pr: dict, runs: list[dict], changed_at: datetime) -> dict | 
     return {"rerun": on_pr[-1]["id"]}
 
 
+def latest_pr_runs(runs: list[dict], head: str | None) -> dict[str, dict]:
+    """{workflow path: its newest pull_request run on `head`}. The runs API answers with each run's latest attempt."""
+    out: dict[str, dict] = {}
+    for r in runs:
+        path = str(r.get("path", "")).split("@")[0]
+        if r.get("head_sha") == head and r.get("event") == "pull_request" and (path not in out or r["id"] > out[path]["id"]):
+            out[path] = r
+    return out
+
+
+def lost_runner(jobs: list[dict]) -> bool:
+    """A failed run none of whose failed jobs has a failed step: the job never ran its steps, so the runner went away,
+    not the code. No jobs to read proves nothing, so that isn't one."""
+    failed = [j for j in jobs if j.get("conclusion") in FAILED_RUN]
+    return bool(failed) and not any(s.get("conclusion") in ("failure", "timed_out") for j in failed for s in j.get("steps") or [])
+
+
+def follow_plan(pr: dict, latest: dict[str, dict], jobs: dict[int, list[dict]], comments: list[dict], workflow_pr: bool, cap: int) -> dict:
+    """What moves one open agent PR now: {"rerun": [run ids], "wake": a FOLLOW_WHY key or None, "stuck": [why]}.
+    `latest` is latest_pr_runs on its head, `jobs` each failed run's jobs, `workflow_pr` whether it changes a workflow.
+    A run still going decides nothing but a conflict. A conflict outranks everything: no check on this head can merge it."""
+    head = (pr.get("head") or {}).get("sha") or ""
+    plan: dict = {"rerun": [], "wake": None, "stuck": []}
+    if pr.get("mergeable_state") == "dirty":
+        plan["wake"] = "conflict"
+        return plan
+    if any(r.get("status") != "completed" for r in latest.values()):
+        return plan
+    verdict = review_verdict(comments, head)
+    failed_any = False
+
+    def rerun(run: dict, why: str) -> None:
+        if int(run.get("run_attempt") or 1) <= cap:
+            plan["rerun"].append(run["id"])
+        else:
+            plan["stuck"].append(f"run {run['id']} {why}, after {cap} re-run(s)")
+
+    for path, run in sorted(latest.items()):
+        if run.get("conclusion") not in FAILED_RUN:
+            continue
+        run_jobs = jobs.get(run["id"]) or []
+        if path == REVIEW_WORKFLOW:  # claude-security-review shares this run and is advisory: only the required job counts
+            run_jobs = [j for j in run_jobs if j.get("name") == REVIEW_JOB]
+            if run_jobs and not any(j.get("conclusion") in FAILED_RUN for j in run_jobs):
+                continue
+        failed_any = True
+        if lost_runner(run_jobs):
+            rerun(run, "lost its runner")
+        elif path == GATE_WORKFLOW:
+            continue  # the gate's verdict is a level waiting on a person; gate_rerun re-scores it after a policy change
+        elif path == REVIEW_WORKFLOW:
+            if workflow_pr:
+                continue  # by design: Claude's reviewer never runs on a workflow change, so a person's approval moves it
+            if verdict == "FAIL":
+                plan["wake"] = plan["wake"] or "review-fail"
+            else:
+                rerun(run, f"failed with {'a PASS' if verdict else 'no verdict'} on this head")
+        else:
+            plan["wake"] = "ci-failed"
+    if not failed_any and latest and pr.get("mergeable_state") == "clean" and not pr.get("auto_merge") and not waits_on_person(pr):
+        plan["wake"] = "green"
+    return plan
+
+
+def pr_role(pr: dict, repo: str) -> str | None:
+    """The role to wake for a PR: the one its `agent/<role>/` branch names when that role has a file, else the repo's owner."""
+    m = re.match(r"agent/([a-z][a-z0-9-]*)/", (pr.get("head") or {}).get("ref") or "")
+    return m.group(1) if m and role_file(m.group(1)) else owner_role(repo)
+
+
+def follow_marked(comments: list[dict], sha: str, why: str) -> bool:
+    """The router has already started the role for this head and reason."""
+    mark = FOLLOW_MARK.format(sha=sha, why=why)
+    return any(mark in (c.get("body") or "") and (c.get("user") or {}).get("login") in router_logins() for c in comments)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
@@ -964,7 +1093,28 @@ def main() -> int:
               f"Skipped this pass; every other repo was routed.", file=sys.stderr)
         cfg = without_repos(cfg, skip)
         report["skipped"] = unreadable
+    blocked = [r for r in unwritable_repos(cfg) if r not in skip]
+    if blocked:
+        print(f"::warning::the router's token can't write {', '.join(blocked)}: add them to roles/{ROUTER_ROLE}/role.yaml writes.repos. "
+              f"Skipped this pass; every other repo was routed.", file=sys.stderr)
+        cfg = without_repos(cfg, set(blocked))
+        report["skipped"] = [*report.get("skipped", []), *blocked]
     started: set[str] = set()  # roles started this pass, so the resume rule never starts one twice
+    refused: list[str] = []
+
+    @contextlib.contextmanager
+    def guarded(where: str):
+        """A write GitHub refuses ends this repo's turn in this rule, and the pass goes on (autonomy#209)."""
+        try:
+            yield
+        except Refused as e:
+            refused.append(f"{where}: {e}")
+            print(f"::warning::{where}: {e}", file=sys.stderr)
+
+    def role_busy(role: str) -> bool:
+        """A run of the role is queued or running: starting another would cancel it (per-role concurrency)."""
+        runs = f"repos/{POLICY_REPO}/actions/workflows/role-{role}.yml/runs"
+        return any(gh.get(runs, max_pages=1, status=s, per_page=1).get("total_count", 0) for s in ("queued", "in_progress"))
 
     def ensure_labels(repo: str, wanted: set[str]):
         have = {l["name"] for l in gh.get(f"repos/{repo}/labels", per_page=100)}
@@ -973,56 +1123,59 @@ def main() -> int:
 
     sims = dict(product_bugs(cfg).get("sim_repos") or {})
     for repo in (product_bugs(cfg).get("repos") or []):
-        ensure_labels(repo, {"routed", "type:bug", "severity:high", "severity:medium", *sims.values()})
-        for issue in gh.get(f"repos/{repo}/issues", state="open", per_page=100):
-            if "pull_request" in issue or "routed" in labels_of(issue):
-                continue
-            link = sim_link(issue.get("body") or "", sims)
-            incident = gh.get(f"repos/{ORG}/{link.group(1)}/issues/{link.group(2)}") if link else None
-            plan = product_bug_plan(issue, incident, sims)
-            if plan:
-                gh.write("PATCH", f"repos/{repo}/issues/{issue['number']}", {"body": (issue.get("body") or "") + plan["append"], "labels": plan["labels"]})
-                report["routed"].append(f"{repo}#{issue['number']} product_bug")
-                report["latency_hours"].append(round((now - ts(issue["created_at"])).total_seconds() / 3600, 1))
+        with guarded(f"product_bug {repo}"):
+            ensure_labels(repo, {"routed", "type:bug", "severity:high", "severity:medium", *sims.values()})
+            for issue in gh.get(f"repos/{repo}/issues", state="open", per_page=100):
+                if "pull_request" in issue or "routed" in labels_of(issue):
+                    continue
+                link = sim_link(issue.get("body") or "", sims)
+                incident = gh.get(f"repos/{ORG}/{link.group(1)}/issues/{link.group(2)}") if link else None
+                plan = product_bug_plan(issue, incident, sims)
+                if plan:
+                    gh.write("PATCH", f"repos/{repo}/issues/{issue['number']}", {"body": (issue.get("body") or "") + plan["append"], "labels": plan["labels"]})
+                    report["routed"].append(f"{repo}#{issue['number']} product_bug")
+                    report["latency_hours"].append(round((now - ts(issue["created_at"])).total_seconds() / 3600, 1))
 
     tool_label = cfg.get("tool_request_label") or None
     for repo in (cfg.get("tool_requests") or []):
-        ensure_labels(repo, {"routed", "type:feature"} | ({tool_label} if tool_label else set()))
-        for issue in gh.get(f"repos/{repo}/issues", state="open", labels="tool-request", per_page=100):
-            if "pull_request" in issue or "routed" in labels_of(issue):
-                continue
-            plan = tool_request_plan(issue, tool_label)
-            if plan:
-                gh.write("PATCH", f"repos/{repo}/issues/{issue['number']}", {"body": (issue.get("body") or "") + plan["append"], "labels": plan["labels"]})
-                report["routed"].append(f"{repo}#{issue['number']} tool_request")
-                report["latency_hours"].append(round((now - ts(issue["created_at"])).total_seconds() / 3600, 1))
-                d = dispatch_plan(repo, issue)
-                if d:
-                    gh.write("POST", f"repos/{POLICY_REPO}/actions/workflows/{d['workflow']}/dispatches", {"ref": "main", "inputs": d["inputs"]})
-                    gh.write("POST", f"repos/{repo}/issues/{issue['number']}/comments", {"body": f"Dispatched to the `{d['role']}` role ({POLICY_REPO} `{d['workflow']}`, signal = this issue). It opens a PR or answers here. {DISPATCH_MARK.format(role=d['role'])}" + FOOTER})
-                    report["dispatched"].append(f"{repo}#{issue['number']} -> {d['role']}")
-                    started.add(d["role"])
+        with guarded(f"tool_request {repo}"):
+            ensure_labels(repo, {"routed", "type:feature"} | ({tool_label} if tool_label else set()))
+            for issue in gh.get(f"repos/{repo}/issues", state="open", labels="tool-request", per_page=100):
+                if "pull_request" in issue or "routed" in labels_of(issue):
+                    continue
+                plan = tool_request_plan(issue, tool_label)
+                if plan:
+                    gh.write("PATCH", f"repos/{repo}/issues/{issue['number']}", {"body": (issue.get("body") or "") + plan["append"], "labels": plan["labels"]})
+                    report["routed"].append(f"{repo}#{issue['number']} tool_request")
+                    report["latency_hours"].append(round((now - ts(issue["created_at"])).total_seconds() / 3600, 1))
+                    d = dispatch_plan(repo, issue)
+                    if d:
+                        gh.write("POST", f"repos/{POLICY_REPO}/actions/workflows/{d['workflow']}/dispatches", {"ref": "main", "inputs": d["inputs"]})
+                        gh.write("POST", f"repos/{repo}/issues/{issue['number']}/comments", {"body": f"Dispatched to the `{d['role']}` role ({POLICY_REPO} `{d['workflow']}`, signal = this issue). It opens a PR or answers here. {DISPATCH_MARK.format(role=d['role'])}" + FOOTER})
+                        report["dispatched"].append(f"{repo}#{issue['number']} -> {d['role']}")
+                        started.add(d["role"])
 
     logins = agent_logins()
     for repo in (cfg.get("reviews") or []):
-        role = owner_role(repo)
-        if not role:
-            continue
-        for pr in gh.get(f"repos/{repo}/pulls", state="open", per_page=50):
-            if (pr.get("user") or {}).get("login", "") not in logins:
+        with guarded(f"review {repo}"):
+            role = owner_role(repo)
+            if not role:
                 continue
-            n = pr["number"]
-            head_at = gh.get(f"repos/{repo}/commits/{pr['head']['sha']}")["commit"]["committer"]["date"]
-            plan = review_plan(pr, head_at, gh.get(f"repos/{repo}/pulls/{n}/reviews", per_page=100),
-                               gh.get(f"repos/{repo}/pulls/{n}/comments", per_page=100),
-                               gh.get(f"repos/{repo}/issues/{n}/comments", per_page=100), logins)
-            if not plan:
-                continue
-            gh.write("POST", f"repos/{POLICY_REPO}/actions/workflows/role-{role}.yml/dispatches", {"ref": "main", "inputs": dispatch_inputs(plan["signal"], "review", repo, n)})
-            gh.write("POST", f"repos/{repo}/issues/{n}/comments", {"body": f"Review ({plan['kind']}) seen; the `{role}` role is starting on it (signal = this PR). It answers each thread, pushes, and re-requests review. {REVIEW_MARK.format(id=plan['id'])}" + FOOTER})
-            report["dispatched"].append(f"{repo}#{n} review -> {role}")
-            started.add(role)
-            report["latency_hours"].append(round((now - ts(plan["at"])).total_seconds() / 3600, 1))
+            for pr in gh.get(f"repos/{repo}/pulls", state="open", per_page=50):
+                if (pr.get("user") or {}).get("login", "") not in logins:
+                    continue
+                n = pr["number"]
+                head_at = gh.get(f"repos/{repo}/commits/{pr['head']['sha']}")["commit"]["committer"]["date"]
+                plan = review_plan(pr, head_at, gh.get(f"repos/{repo}/pulls/{n}/reviews", per_page=100),
+                                   gh.get(f"repos/{repo}/pulls/{n}/comments", per_page=100),
+                                   gh.get(f"repos/{repo}/issues/{n}/comments", per_page=100), logins)
+                if not plan:
+                    continue
+                gh.write("POST", f"repos/{POLICY_REPO}/actions/workflows/role-{role}.yml/dispatches", {"ref": "main", "inputs": dispatch_inputs(plan["signal"], "review", repo, n)})
+                gh.write("POST", f"repos/{repo}/issues/{n}/comments", {"body": f"Review ({plan['kind']}) seen; the `{role}` role is starting on it (signal = this PR). It answers each thread, pushes, and re-requests review. {REVIEW_MARK.format(id=plan['id'])}" + FOOTER})
+                report["dispatched"].append(f"{repo}#{n} review -> {role}")
+                started.add(role)
+                report["latency_hours"].append(round((now - ts(plan["at"])).total_seconds() / 3600, 1))
 
     if cfg.get("resume"):
         open_by_repo: dict[str, list[dict]] = {}
@@ -1036,77 +1189,81 @@ def main() -> int:
                 closed_by_repo[r] = [{**p, "repo": r} for p in gh.get(f"repos/{r}/pulls", max_pages=1, state="closed", sort="updated", direction="desc", per_page=50)]
             return closed_by_repo[r]
         for repo in (cfg.get("tool_requests") or []):
-            role = owner_role(repo)
-            if not role or role in started:
-                continue
-            requests = sorted((i for i in gh.get(f"repos/{repo}/issues", state="open", labels="tool-request", per_page=100)
-                               if "pull_request" not in i and "routed" in labels_of(i)), key=lambda i: i["number"])
-            if not requests:
-                continue
-            repos = role_repos(role, skip=skip) or [repo]
-            if repo not in repos:
-                repos = [*repos, repo]
-            named = {key for r in repos for p in open_prs(r) for key in signal_refs(p.get("body"), r)}
-            requests = [i for i in requests if (repo, i["number"]) not in named]
-            if not requests:
-                continue
-            own = (role_file(role).get("identity") or {}).get("github_login")
-            budget = budget_for(role, cfg.get("pr_budget", 2))
-            open_count = role_open_count(role, own, repos, {r: open_prs(r) for r in repos})
-            if open_count >= budget:
-                continue
-            closed = [p for r in repos for p in closed_prs(r)]
-            if not any(is_roles_pr(p, role, own) for p in closed):
-                continue
-            runs = f"repos/{POLICY_REPO}/actions/workflows/role-{role}.yml/runs"
-            if any(gh.get(runs, max_pages=1, status=s, per_page=1).get("total_count", 0) for s in ("queued", "in_progress")):
-                continue  # a run already going reads its requests itself; the next pass looks again
-            who = role_logins(role)
-            for issue in requests:
-                n = issue["number"]
-                plan = resume_plan(role, who, own, issue, gh.get(f"repos/{repo}/issues/{n}/comments", per_page=100),
-                                   open_count, budget, closed, False, (repo, n))
-                if not plan:
+            with guarded(f"resume {repo}"):
+                role = owner_role(repo)
+                if not role or role in started:
                     continue
-                freed = ", ".join(plan["freed"])
-                gh.write("POST", f"repos/{POLICY_REPO}/actions/workflows/role-{role}.yml/dispatches", {"ref": "main", "inputs": dispatch_inputs(plan["signal"], "pr slot freed", repo, n)})
-                gh.write("POST", f"repos/{repo}/issues/{n}/comments", {"body": f"A PR slot is free ({freed} closed), so the `{role}` role is starting on this again (signal = this issue). {RESUME_MARK.format(role=role)}" + FOOTER})
-                report["dispatched"].append(f"{repo}#{n} resume -> {role}")
-                started.add(role)
-                break
+                requests = sorted((i for i in gh.get(f"repos/{repo}/issues", state="open", labels="tool-request", per_page=100)
+                                   if "pull_request" not in i and "routed" in labels_of(i)), key=lambda i: i["number"])
+                if not requests:
+                    continue
+                repos = role_repos(role, skip=skip) or [repo]
+                if repo not in repos:
+                    repos = [*repos, repo]
+                named = {key for r in repos for p in open_prs(r) for key in signal_refs(p.get("body"), r)}
+                requests = [i for i in requests if (repo, i["number"]) not in named]
+                if not requests:
+                    continue
+                own = (role_file(role).get("identity") or {}).get("github_login")
+                budget = budget_for(role, cfg.get("pr_budget", 2))
+                open_count = role_open_count(role, own, repos, {r: open_prs(r) for r in repos})
+                if open_count >= budget or role_waiting_count(role, own, repos, {r: open_prs(r) for r in repos}) >= int(cfg.get("pr_waiting_budget", 3)):
+                    continue
+                closed = [p for r in repos for p in closed_prs(r)]
+                if not any(is_roles_pr(p, role, own) for p in closed):
+                    continue
+                if role_busy(role):
+                    continue  # a run already going reads its requests itself; the next pass looks again
+                who = role_logins(role)
+                for issue in requests:
+                    n = issue["number"]
+                    plan = resume_plan(role, who, own, issue, gh.get(f"repos/{repo}/issues/{n}/comments", per_page=100),
+                                       open_count, budget, closed, False, (repo, n))
+                    if not plan:
+                        continue
+                    freed = ", ".join(plan["freed"])
+                    gh.write("POST", f"repos/{POLICY_REPO}/actions/workflows/role-{role}.yml/dispatches", {"ref": "main", "inputs": dispatch_inputs(plan["signal"], "pr slot freed", repo, n)})
+                    gh.write("POST", f"repos/{repo}/issues/{n}/comments", {"body": f"A PR slot is free ({freed} closed), so the `{role}` role is starting on this again (signal = this issue). {RESUME_MARK.format(role=role)}" + FOOTER})
+                    report["dispatched"].append(f"{repo}#{n} resume -> {role}")
+                    started.add(role)
+                    break
 
     owner = owner_login()
     da = cfg.get("digest_answers") or {}
     if da and owner:
         clerk, short = da["role"], POLICY_REPO.split("/", 1)[1]
         for issue in gh.get(f"repos/{POLICY_REPO}/issues", state="open", labels=da.get("label", "digest"), per_page=10):
-            n = issue["number"]
-            plan = digest_answer_plan(gh.get(f"repos/{POLICY_REPO}/issues/{n}/comments", per_page=100), owner)
-            if not plan:
-                continue
-            gh.write("POST", f"repos/{POLICY_REPO}/actions/workflows/role-{clerk}.yml/dispatches", {"ref": "main", "inputs": dispatch_inputs(plan["signal"], "digest answer", POLICY_REPO, n)})
-            gh.write("POST", f"repos/{POLICY_REPO}/issues/{n}/comments", {"body": f"Answers seen; the `{clerk}` role is recording them (signal = that comment). It replies here with the decisions-log PRs. {DIGEST_MARK.format(id=plan['id'])}" + FOOTER})
-            report["dispatched"].append(f"{short}#{n} digest answers -> {clerk}")
-            report["latency_hours"].append(round((now - ts(plan["at"])).total_seconds() / 3600, 1))
+            with guarded(f"digest_answer {POLICY_REPO}"):
+                n = issue["number"]
+                plan = digest_answer_plan(gh.get(f"repos/{POLICY_REPO}/issues/{n}/comments", per_page=100), owner)
+                if not plan:
+                    continue
+                gh.write("POST", f"repos/{POLICY_REPO}/actions/workflows/role-{clerk}.yml/dispatches", {"ref": "main", "inputs": dispatch_inputs(plan["signal"], "digest answer", POLICY_REPO, n)})
+                gh.write("POST", f"repos/{POLICY_REPO}/issues/{n}/comments", {"body": f"Answers seen; the `{clerk}` role is recording them (signal = that comment). It replies here with the decisions-log PRs. {DIGEST_MARK.format(id=plan['id'])}" + FOOTER})
+                report["dispatched"].append(f"{short}#{n} digest answers -> {clerk}")
+                report["latency_hours"].append(round((now - ts(plan["at"])).total_seconds() / 3600, 1))
 
     for repo, product in (cfg.get("ci_main") or {}).items():
-        runs = gh.get(f"repos/{repo}/actions/runs", branch="main", event="push", per_page=50)
-        runs = runs.get("workflow_runs", []) if isinstance(runs, dict) else []
-        latest = latest_by_workflow(runs)
-        if not latest:
-            continue
-        open_issues = gh.get(f"repos/{repo}/issues", state="open", labels="ci-failure", per_page=100)
-        plan = ci_plan(latest, open_issues, product)
-        if plan["open"]:
-            ensure_labels(repo, {"ci-failure", "type:bug", product, "severity:high"})
-        for item in plan["open"]:
-            gh.write("POST", f"repos/{repo}/issues", {"title": item["title"], "body": item["body"], "labels": item["labels"]})
-            report["routed"].append(f"{repo} ci_main {item['title']!r}")
-            report["latency_hours"].append(round((now - ts(item["signal_at"])).total_seconds() / 3600, 1))
-        for item in plan["close"]:
-            gh.write("POST", f"repos/{repo}/issues/{item['number']}/comments", {"body": item["comment"]})
-            gh.write("PATCH", f"repos/{repo}/issues/{item['number']}", {"state": "closed", "state_reason": "completed"})
-            report["closed"].append(f"{repo}#{item['number']}")
+        with guarded(f"ci_main {repo}"):
+            runs = []
+            for event in ("push", "schedule"):  # a nightly scan on main fails on no push (the loop audit, 2026-11-05)
+                got = gh.get(f"repos/{repo}/actions/runs", branch="main", event=event, per_page=50)
+                runs += got.get("workflow_runs", []) if isinstance(got, dict) else []
+            latest = latest_by_workflow(runs)
+            if not latest:
+                continue
+            open_issues = gh.get(f"repos/{repo}/issues", state="open", labels="ci-failure", per_page=100)
+            plan = ci_plan(latest, open_issues, product)
+            if plan["open"]:
+                ensure_labels(repo, {"ci-failure", "type:bug", product, "severity:high"})
+            for item in plan["open"]:
+                gh.write("POST", f"repos/{repo}/issues", {"title": item["title"], "body": item["body"], "labels": item["labels"]})
+                report["routed"].append(f"{repo} ci_main {item['title']!r}")
+                report["latency_hours"].append(round((now - ts(item["signal_at"])).total_seconds() / 3600, 1))
+            for item in plan["close"]:
+                gh.write("POST", f"repos/{repo}/issues/{item['number']}/comments", {"body": item["comment"]})
+                gh.write("PATCH", f"repos/{repo}/issues/{item['number']}", {"state": "closed", "state_reason": "completed"})
+                report["closed"].append(f"{repo}#{item['number']}")
 
     if cfg.get("delivered"):
         backfill = cfg["delivered"].get("backfill") if isinstance(cfg["delivered"], dict) else None
@@ -1117,61 +1274,63 @@ def main() -> int:
                 pending |= set(signal_refs(pr.get("body"), repo))
         requests: dict[tuple[str, int], dict] = {}
         for repo in (cfg.get("tool_requests") or []):
-            found = gh.get("search/issues", q=f"repo:{repo}+is:pr+is:merged+merged:>={since}", per_page=100).get("items", [])
-            for pr in found:
-                pr = {**pr, "merged_at": (pr.get("pull_request") or {}).get("merged_at") or pr.get("closed_at") or ""}
-                for key, kind in signal_refs(pr.get("body"), repo).items():
-                    if kind == "close" or key[0] not in cfg["tool_requests"]:
-                        continue
-                    if key not in requests:
-                        # A Signal link to an issue that doesn't exist (a bare #N meant for another repository) is skipped,
-                        # not the end of the pass (every pass once failed on a "#606" meant for another repository).
-                        requests[key] = gh.get_or_none(f"repos/{key[0]}/issues/{key[1]}")
-                        if requests[key] is None:
-                            print(f"::warning::{repo}#{pr.get('number')}: its Signal links {key[0]}#{key[1]}, which doesn't exist; skipped", file=sys.stderr)
-                    req = requests[key]
-                    if req is None or req.get("state") != "open" or "tool-request" not in labels_of(req) or "pull_request" in req:
-                        continue
-                    plan = delivered_plan(pr, repo, req, gh.get(f"repos/{key[0]}/issues/{key[1]}/comments", per_page=100), key in pending, owner_role(key[0]))
-                    if not plan:
-                        continue
-                    gh.write("POST", f"repos/{key[0]}/issues/{key[1]}/comments", {"body": plan["comment"]})
-                    if plan.get("label"):
-                        ensure_labels(key[0], {plan["label"]})
-                        gh.write("POST", f"repos/{key[0]}/issues/{key[1]}/labels", {"labels": [plan["label"]]})
-                    report["routed"].append(f"{key[0]}#{key[1]} delivered ({'part' if kind == 'part' else 'flagged'}) by {repo}#{pr['number']}")
+            with guarded(f"delivered {repo}"):
+                found = gh.get("search/issues", q=f"repo:{repo}+is:pr+is:merged+merged:>={since}", per_page=100).get("items", [])
+                for pr in found:
+                    pr = {**pr, "merged_at": (pr.get("pull_request") or {}).get("merged_at") or pr.get("closed_at") or ""}
+                    for key, kind in signal_refs(pr.get("body"), repo).items():
+                        if kind == "close" or key[0] not in cfg["tool_requests"]:
+                            continue
+                        if key not in requests:
+                            # A Signal link to an issue that doesn't exist (a bare #N meant for another repository) is skipped,
+                            # not the end of the pass (every pass once failed on a "#606" meant for another repository).
+                            requests[key] = gh.get_or_none(f"repos/{key[0]}/issues/{key[1]}")
+                            if requests[key] is None:
+                                print(f"::warning::{repo}#{pr.get('number')}: its Signal links {key[0]}#{key[1]}, which doesn't exist; skipped", file=sys.stderr)
+                        req = requests[key]
+                        if req is None or req.get("state") != "open" or "tool-request" not in labels_of(req) or "pull_request" in req:
+                            continue
+                        plan = delivered_plan(pr, repo, req, gh.get(f"repos/{key[0]}/issues/{key[1]}/comments", per_page=100), key in pending, owner_role(key[0]))
+                        if not plan:
+                            continue
+                        gh.write("POST", f"repos/{key[0]}/issues/{key[1]}/comments", {"body": plan["comment"]})
+                        if plan.get("label"):
+                            ensure_labels(key[0], {plan["label"]})
+                            gh.write("POST", f"repos/{key[0]}/issues/{key[1]}/labels", {"labels": [plan["label"]]})
+                        report["routed"].append(f"{key[0]}#{key[1]} delivered ({'part' if kind == 'part' else 'flagged'}) by {repo}#{pr['number']}")
     for repo in (cfg.get("run_failed") or []):
         workflows = gh.get(f"repos/{repo}/actions/workflows", per_page=100).get("workflows", [])
         roles = {Path(w["path"]).stem.removeprefix("role-"): w for w in workflows if re.fullmatch(r"\.github/workflows/role-[\w-]+\.ya?ml", w["path"])}
         open_issues = {i["title"]: i for i in gh.get(f"repos/{repo}/issues", state="open", labels="run-failure", per_page=100) if "pull_request" not in i}
         ensured = False
         for role, w in sorted(roles.items()):
-            runs = gh.get(f"repos/{repo}/actions/workflows/{w['id']}/runs", status="completed", per_page=20).get("workflow_runs", [])
-            issue = open_issues.get(run_failed_title(role))
-            comments = gh.get(f"repos/{repo}/issues/{issue['number']}/comments", per_page=100) if issue else []
-            plan = run_failed_plan(role, runs, issue, comments, [], [], owner)
-            if plan and ("open" in plan or "comment" in plan):
-                run_id = RUN_FAILED_MARK_RE.search((plan.get("open") or plan.get("comment"))["body"]).group(1)
-                jobs = gh.get(f"repos/{repo}/actions/runs/{run_id}/jobs", per_page=100).get("jobs", [])
-                artifacts = gh.get(f"repos/{repo}/actions/runs/{run_id}/artifacts", per_page=100).get("artifacts", [])
-                plan = run_failed_plan(role, runs, issue, comments, jobs, artifacts, owner)
-            if not plan:
-                continue
-            if "open" in plan:
-                if not ensured:
-                    ensure_labels(repo, {"run-failure", "type:bug", "severity:high"})
-                    ensured = True
-                item = plan["open"]
-                gh.write("POST", f"repos/{repo}/issues", {"title": item["title"], "body": item["body"], "labels": item["labels"]})
-                report["routed"].append(f"{repo} run_failed {item['title']!r}")
-                report["latency_hours"].append(round((now - ts(item["signal_at"])).total_seconds() / 3600, 1))
-            elif "comment" in plan:
-                gh.write("POST", f"repos/{repo}/issues/{plan['comment']['number']}/comments", {"body": plan["comment"]["body"]})
-                report["routed"].append(f"{repo}#{plan['comment']['number']} run_failed again")
-            else:
-                gh.write("POST", f"repos/{repo}/issues/{plan['close']['number']}/comments", {"body": plan["close"]["comment"]})
-                gh.write("PATCH", f"repos/{repo}/issues/{plan['close']['number']}", {"state": "closed", "state_reason": "completed"})
-                report["closed"].append(f"{repo}#{plan['close']['number']}")
+            with guarded(f"run_failed {role}"):
+                runs = gh.get(f"repos/{repo}/actions/workflows/{w['id']}/runs", status="completed", per_page=20).get("workflow_runs", [])
+                issue = open_issues.get(run_failed_title(role))
+                comments = gh.get(f"repos/{repo}/issues/{issue['number']}/comments", per_page=100) if issue else []
+                plan = run_failed_plan(role, runs, issue, comments, [], [], owner)
+                if plan and ("open" in plan or "comment" in plan):
+                    run_id = RUN_FAILED_MARK_RE.search((plan.get("open") or plan.get("comment"))["body"]).group(1)
+                    jobs = gh.get(f"repos/{repo}/actions/runs/{run_id}/jobs", per_page=100).get("jobs", [])
+                    artifacts = gh.get(f"repos/{repo}/actions/runs/{run_id}/artifacts", per_page=100).get("artifacts", [])
+                    plan = run_failed_plan(role, runs, issue, comments, jobs, artifacts, owner)
+                if not plan:
+                    continue
+                if "open" in plan:
+                    if not ensured:
+                        ensure_labels(repo, {"run-failure", "type:bug", "severity:high"})
+                        ensured = True
+                    item = plan["open"]
+                    gh.write("POST", f"repos/{repo}/issues", {"title": item["title"], "body": item["body"], "labels": item["labels"]})
+                    report["routed"].append(f"{repo} run_failed {item['title']!r}")
+                    report["latency_hours"].append(round((now - ts(item["signal_at"])).total_seconds() / 3600, 1))
+                elif "comment" in plan:
+                    gh.write("POST", f"repos/{repo}/issues/{plan['comment']['number']}/comments", {"body": plan["comment"]["body"]})
+                    report["routed"].append(f"{repo}#{plan['comment']['number']} run_failed again")
+                else:
+                    gh.write("POST", f"repos/{repo}/issues/{plan['close']['number']}/comments", {"body": plan["close"]["comment"]})
+                    gh.write("PATCH", f"repos/{repo}/issues/{plan['close']['number']}", {"state": "closed", "state_reason": "completed"})
+                    report["closed"].append(f"{repo}#{plan['close']['number']}")
 
     if cfg.get("override"):
         watched, unreachable = override_repos()
@@ -1185,22 +1344,22 @@ def main() -> int:
         if result.get("total_count", 0) > len(found):  # one search page; say so rather than skip silently
             report["override_unchecked"] = result["total_count"] - len(found)
         for item in found:
-            repo = item["repository_url"].split("/repos/", 1)[1]
-            merged_at = (item.get("pull_request") or {}).get("merged_at") or ""
-            if repo not in watched or not merged_at or ts(merged_at) < now - timedelta(hours=48):
-                continue
-            n = item["number"]
-            comments = gh.get(f"repos/{repo}/issues/{n}/comments", per_page=100)
-            if not any((c.get("user") or {}).get("login") == REVIEWER_LOGIN and "Verdict: FAIL (" in (c.get("body") or "") for c in comments):
-                continue  # no FAIL from the reviewer at all: skip the PR fetch
-            plan = override_plan(gh.get(f"repos/{repo}/pulls/{n}"), comments)
-            if not plan:
-                continue
-            gh.write("POST", f"repos/{repo}/issues/{n}/comments", {"body": plan["comment"]})
-            report["routed"].append(f"{repo}#{n} override asked")
-            report["latency_hours"].append(round((now - ts(merged_at)).total_seconds() / 3600, 1))
+            with guarded(f"override {item['repository_url'].split('/repos/', 1)[1]}#{item['number']}"):
+                repo = item["repository_url"].split("/repos/", 1)[1]
+                merged_at = (item.get("pull_request") or {}).get("merged_at") or ""
+                if repo not in watched or not merged_at or ts(merged_at) < now - timedelta(hours=48):
+                    continue
+                n = item["number"]
+                comments = gh.get(f"repos/{repo}/issues/{n}/comments", per_page=100)
+                if not any((c.get("user") or {}).get("login") == REVIEWER_LOGIN and "Verdict: FAIL (" in (c.get("body") or "") for c in comments):
+                    continue  # no FAIL from the reviewer at all: skip the PR fetch
+                plan = override_plan(gh.get(f"repos/{repo}/pulls/{n}"), comments)
+                if not plan:
+                    continue
+                gh.write("POST", f"repos/{repo}/issues/{n}/comments", {"body": plan["comment"]})
+                report["routed"].append(f"{repo}#{n} override asked")
+                report["latency_hours"].append(round((now - ts(merged_at)).total_seconds() / 3600, 1))
 
-    refused: list[str] = []
     gr = cfg.get("gate_rerun") or {}
     if gr.get("repos"):
         repos = gr["repos"]
@@ -1234,12 +1393,54 @@ def main() -> int:
                 else:
                     lines.append(f"{repo}#{n} run {plan['rerun']} rerun requested")
 
+    ft = cfg.get("follow_through")
+    if ft:
+        ft = ft if isinstance(ft, dict) else {}
+        cap, left = int(ft.get("rerun_cap", 2)), int(ft.get("max_per_pass", 20))
+        report["follow_through"] = []
+        for repo in (cfg.get("reviews") or []):
+            with guarded(f"follow_through {repo}"):
+                for listed in gh.get(f"repos/{repo}/pulls", state="open", per_page=50):
+                    if (listed.get("user") or {}).get("login", "") not in logins or listed.get("draft"):
+                        continue
+                    n = listed["number"]
+                    pr = gh.get(f"repos/{repo}/pulls/{n}")
+                    sha = pr["head"]["sha"]
+                    got = gh.get(f"repos/{repo}/actions/runs", head_sha=sha, per_page=100)
+                    latest = latest_pr_runs(got.get("workflow_runs", []) if isinstance(got, dict) else [], sha)
+                    jobs = {r["id"]: gh.get(f"repos/{repo}/actions/runs/{r['id']}/jobs", per_page=100).get("jobs", [])
+                            for r in latest.values() if r.get("conclusion") in FAILED_RUN}
+                    workflow_pr = REVIEW_WORKFLOW in latest and latest[REVIEW_WORKFLOW].get("conclusion") in FAILED_RUN and any(
+                        f["filename"].startswith(".github/workflows/") for f in gh.get(f"repos/{repo}/pulls/{n}/files", per_page=100))
+                    comments = gh.get(f"repos/{repo}/issues/{n}/comments", per_page=100)
+                    plan = follow_plan(pr, latest, jobs, comments, workflow_pr, cap)
+                    report["follow_through"] += [f"{repo}#{n}: {why}" for why in plan["stuck"]]
+                    for run_id in plan["rerun"]:
+                        if left <= 0:
+                            report["follow_through"].append(f"{repo}#{n}: run {run_id} waits for the next pass (max_per_pass)")
+                            continue
+                        left -= 1
+                        err = gh.attempt("POST", f"repos/{repo}/actions/runs/{run_id}/rerun-failed-jobs", {})
+                        if err:
+                            refused.append(f"{repo}#{n}: run {run_id} re-run refused: {err}")
+                        else:
+                            report["follow_through"].append(f"{repo}#{n}: run {run_id} re-run")
+                    why, role = plan["wake"], pr_role(pr, repo)
+                    if not why or not role or role in started or follow_marked(comments, sha, why) or role_busy(role):
+                        continue
+                    gh.write("POST", f"repos/{POLICY_REPO}/actions/workflows/role-{role}.yml/dispatches", {"ref": "main", "inputs": dispatch_inputs(pr.get("html_url", ""), f"follow-through ({why})", repo, n)})
+                    gh.write("POST", f"repos/{repo}/issues/{n}/comments", {"body": f"The `{role}` role is starting on this PR: {FOLLOW_WHY[why]}. {FOLLOW_MARK.format(sha=sha, why=why)}" + FOOTER})
+                    report["dispatched"].append(f"{repo}#{n} follow-through ({why}) -> {role}")
+                    started.add(role)
+
     lat = report["latency_hours"]
     report["routed_within_1h"] = round(sum(h <= 1.0 for h in lat) / len(lat), 2) if lat else None
     report["writes"] = gh.writes if a.dry_run else len(gh.writes)
+    if refused:
+        report["refused"] = refused
     print(json.dumps(report, indent=2))
     if refused:
-        print(f"::error::{len(refused)} autonomy-gate re-run(s) refused; those PRs keep a verdict from before the policy change", file=sys.stderr)
+        print(f"::error::{len(refused)} write(s) refused, each listed in the report; every rule still ran:\n" + "\n".join(refused), file=sys.stderr)
         return 1
     return 0
 

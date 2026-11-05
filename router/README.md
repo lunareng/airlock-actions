@@ -97,7 +97,8 @@ tool_request_label: product:core      # optional: the product label a request wi
 reviews: [acme/api, acme/cli]         # review: repos whose agent PRs a person's review wakes the owner of
 delivered: true                       # or {backfill: [<from>, <until>]}: look back to <from> until <until>
 resume: true
-pr_budget: {default: 2, solo-agent: 1}   # open PRs a role may hold, across its writes.repos
+pr_budget: {default: 2, solo-agent: 1}   # open PRs a role has to move itself, across its writes.repos
+pr_waiting_budget: 3                  # open L1/L2 PRs a role may leave waiting on a person; they hold no pr_budget slot
 digest_answers: {role: clerk}         # optional label: digest (the label of the digest issue)
 override: true
 deployer_login: "acme-deployer[bot]"  # optional: whose merged PRs override skips
@@ -108,6 +109,9 @@ gate_rerun:
   max_per_pass: 20
 run_failed: [acme/policy]             # repos whose role-*.yml workflows run_failed watches
 ci_main: {acme/api: product:core}     # repo: the product label its CI-failure issues carry
+follow_through:                       # optional: moves open agent PRs in the reviews repos between role runs; or `true`
+  rerun_cap: 2                        # re-runs of a run that lost its runner or a review with no verdict
+  max_per_pass: 20
 ```
 
 It also reads the policy repo's `config.yaml` (`human_owner`, `agent_markers.logins`, `airlock.app_login`,
@@ -122,6 +126,13 @@ The checks before every pass:
   write), and has a `repos/<name>.yaml`;
 - every repo is in the policy repo's organization;
 - `product_bugs` is a mapping and `digest_answers` names its role.
+
+A repo a writing rule names and the role's `writes.repos` doesn't is skipped with a warning, as an unreadable repo is. A
+write GitHub refuses at run time ends only that repo's turn in that rule: every other repo and rule still runs, the
+refusal is listed under `refused` in the report, and the pass exits 1 at the end.
+
+`follow_through` needs `writes.dispatch: true`, as `gate_rerun` does: a re-run needs Actions write. It reads runs and
+jobs through the Actions API, never the Checks API, which Airlock doesn't grant.
 
 ## Tests
 

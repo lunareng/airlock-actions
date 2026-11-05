@@ -663,3 +663,107 @@ assert _unreachable == ["acme/marketing", "acme/mobile", "acme/studio"], _unreac
 assert not (_watched & set(_unreachable)) and "acme/policy" not in _watched and "acme/legacy" not in _watched
 print("OK: override asks only where the router writes")
 
+
+
+# A repo a writing rule names and the role can't write is skipped like an unreadable one, never a config problem, so one
+# missing grant can't stop routing (autonomy#209: a public repo passes the read probe, then its first write ends the pass).
+from router import config_problems, unwritable_repos  # noqa: E402
+_cfg = {**RCFG, "tool_requests": [*RCFG["tool_requests"], "acme/docs"], "reviews": [*RCFG["reviews"], "acme/docs"]}
+assert "acme/docs" in unwritable_repos(_cfg) and "acme/api" not in unwritable_repos(_cfg), unwritable_repos(_cfg)
+assert not any("acme/docs" in p for p in config_problems(_cfg)), config_problems(_cfg)
+_skipped = _tenant.without_repos(_cfg, {"acme/docs"})
+assert "acme/docs" not in _skipped["tool_requests"] and "acme/api" in _skipped["tool_requests"]
+assert unwritable_repos({"gate_rerun": {"repos": ["acme/docs"]}}) == [], "gate_rerun's own check is fatal, and stays so"
+print("OK: an unwritable repo is skipped")
+
+# A write refused at run time ends that repo's turn in that rule, the later rules still run, and the pass exits 1 with the
+# refusal in its report.
+def _refusing(args, **kw):
+    if len(args) > 4 and args[:3] == ["gh", "api", "-X"] and args[3] == "PATCH" and args[4] == "repos/acme/cli/issues/5":
+        return _Probe(1, "gh: Resource not accessible by integration (HTTP 403)")
+    return _fake_gh(args, **kw)
+
+
+_calls.clear()
+_sp.run = _refusing
+_out = _io.StringIO()
+_errs = _io.StringIO()
+try:
+    sys.argv = ["router.py", "--policy-dir", str(FIX), "--policy-repo", "acme/policy"]
+    with _ctx.redirect_stdout(_out), _ctx.redirect_stderr(_errs):
+        _code = _tenant.main()
+finally:
+    _sp.run = _real
+_tenant.configure(FIX, "acme/policy", "router", RCFG)
+_rep = _j.loads(_out.getvalue())
+assert _code == 1, _rep
+assert any("tool_request acme/cli" in r and "HTTP 403" in r for r in _rep["refused"]), _rep
+assert "acme/cli#5 -> cli-engineer" not in _rep["dispatched"], "a refused write starts no role: nothing would stop the next pass doing it again"
+assert "policy#40 digest answers -> clerk" in _rep["dispatched"], "a rule after the refusal still ran"
+assert any("ci_main" in r for r in _rep["routed"]), "so did ci_main"
+print("OK: a refused write ends one repo's turn, not the pass")
+
+# Follow-through: what moves an agent's PR between its role's runs.
+from router import FOLLOW_MARK, follow_marked, follow_plan, latest_pr_runs, lost_runner, pr_role, role_open_count, role_waiting_count  # noqa: E402
+_H = "a" * 40
+_V = lambda v, sha=_H: {"user": {"login": "claude[bot]"}, "created_at": "2026-11-01T00:00:00Z", "body": f"notes\n\nVerdict: {v} ({sha})"}  # noqa: E731
+_PR = {"head": {"sha": _H, "ref": "agent/cli-engineer/x"}, "mergeable_state": "blocked", "labels": L("level:L4"), "auto_merge": {"merge_method": "rebase"}}
+_RV, _GT, _CI = ".github/workflows/claude-review.yml", ".github/workflows/autonomy-gate.yml", ".github/workflows/ci.yml"
+_run = lambda i, c="success", a=1, s="completed": {"id": i, "status": s, "conclusion": c, "run_attempt": a}  # noqa: E731
+_ran = {"name": "claude-review", "conclusion": "failure", "steps": [{"conclusion": "success"}, {"conclusion": "failure"}]}
+_gone = {"name": "test", "conclusion": "failure", "steps": []}
+
+
+def _fp(latest, jobs=None, comments=(), workflow_pr=False, cap=2, **pr):
+    return follow_plan({**_PR, **pr}, latest, jobs or {}, list(comments), workflow_pr, cap)
+
+
+assert latest_pr_runs([{"id": 1, "head_sha": _H, "event": "pull_request", "path": _CI}, {"id": 2, "head_sha": _H, "event": "pull_request", "path": _CI + "@main"},
+                       {"id": 3, "head_sha": _H, "event": "pull_request_review", "path": _RV}, {"id": 4, "head_sha": "b", "event": "pull_request", "path": _GT}], _H)[_CI]["id"] == 2
+assert set(latest_pr_runs([{"id": 3, "head_sha": _H, "event": "pull_request_review", "path": _RV}], _H)) == set(), "a review's run isn't the push's"
+assert lost_runner([_gone]) and not lost_runner([_ran]) and not lost_runner([]), "no jobs to read proves nothing"
+# lunar-salon#92: the review failed with no verdict, auto-merge armed, 48 hours of nothing. Now it is re-run.
+assert _fp({_RV: _run(1, "failure")}, {1: [_ran]})["rerun"] == [1]
+# A PASS on this head and a red check: re-run, so the row says what the verdict says.
+assert _fp({_RV: _run(1, "failure")}, {1: [_ran]}, [_V("PASS")])["rerun"] == [1]
+# The cap: a run already on its third attempt is listed, not re-run again.
+_stuck = _fp({_RV: _run(1, "failure", a=3)}, {1: [_ran]})
+assert _stuck["rerun"] == [] and "no verdict" in _stuck["stuck"][0] and _stuck["wake"] is None, _stuck
+assert _fp({_RV: _run(1, "failure", a=2)}, {1: [_ran]})["rerun"] == [1]
+# A FAIL verdict that landed after the role's run ended wakes the role; an older head's verdict is not this head's.
+assert _fp({_RV: _run(1, "failure")}, {1: [_ran]}, [_V("FAIL")])["wake"] == "review-fail"
+assert _fp({_RV: _run(1, "failure")}, {1: [_ran]}, [_V("FAIL", "b" * 40)])["wake"] is None
+# A workflow PR with no approval is a person's to move: no re-run, no wake (lunar-cli#106).
+_wf = _fp({_RV: _run(1, "failure")}, {1: [_ran]}, [_V("PASS")], workflow_pr=True)
+assert _wf["rerun"] == [] and _wf["wake"] is None, _wf
+# The advisory security job failing in the same run moves nothing.
+assert _fp({_RV: _run(1, "failure")}, {1: [{**_ran, "name": "claude-security-review"}, {"name": "claude-review", "conclusion": "success", "steps": []}]}) == {"rerun": [], "wake": None, "stuck": []}
+# A job that lost its runner is re-run in any workflow, the gate's too; the code wasn't what failed.
+assert _fp({_CI: _run(2, "failure")}, {2: [_gone]})["rerun"] == [2] and _fp({_GT: _run(3, "failure")}, {3: [_gone]})["rerun"] == [3]
+# A real failure wakes the role; the gate's failing verdict waits on a person and moves nothing.
+assert _fp({_CI: _run(2, "failure")}, {2: [{"name": "test", "conclusion": "failure", "steps": [{"conclusion": "failure"}]}]})["wake"] == "ci-failed"
+assert _fp({_GT: _run(3, "failure")}, {3: [{"name": "autonomy-gate", "conclusion": "failure", "steps": [{"conclusion": "failure"}]}]}) == {"rerun": [], "wake": None, "stuck": []}
+# A conflict outranks everything, a run still going included, and reaches an L1 PR too (lunareng/airlock#69).
+assert _fp({_CI: _run(2, None, s="in_progress")}, mergeable_state="dirty", labels=L("level:L1"))["wake"] == "conflict"
+# Anything still going decides nothing yet.
+assert _fp({_CI: _run(2, None, s="in_progress"), _RV: _run(1, "failure")}, {1: [_ran]}) == {"rerun": [], "wake": None, "stuck": []}
+# Mergeable with nothing armed: an L3/L4 PR wakes its role to merge; auto-merge armed, or an L1/L2 PR, doesn't.
+assert _fp({_CI: _run(2)}, mergeable_state="clean", auto_merge=None)["wake"] == "green"
+assert _fp({_CI: _run(2)}, mergeable_state="clean")["wake"] is None
+assert _fp({_CI: _run(2)}, mergeable_state="clean", auto_merge=None, labels=L("level:L2"))["wake"] is None
+assert _fp({}, mergeable_state="clean", auto_merge=None)["wake"] is None, "no runs yet is not green"
+# Once per head and reason, and only the router's own comment counts.
+_m = FOLLOW_MARK.format(sha=_H, why="conflict")
+assert follow_marked([{"user": {"login": next(iter(_tenant.router_logins()))}, "body": _m}], _H, "conflict")
+assert not follow_marked([{"user": {"login": "acme-owner"}, "body": _m}], _H, "conflict"), "a person pasting the marker isn't the router"
+assert not follow_marked([], _H, "conflict")
+assert pr_role({"head": {"ref": "agent/cli-engineer/x"}}, "acme/api") == "cli-engineer"
+assert pr_role({"head": {"ref": "agent/no-such-role/x"}}, "acme/cli") == "cli-engineer", "a role with no file falls to the repo's owner"
+print("OK: follow-through")
+
+# The budget counts what the role itself has to move; what waits on a person is bounded apart.
+_own = "acme-cli-engineer[bot]"
+_prs = {"acme/cli": [{"user": {"login": _own}, "labels": L("level:L2")}, {"user": {"login": _own}, "labels": L("level:L1")}, {"user": {"login": _own}, "labels": L("level:L4")}, {"user": {"login": _own}}]}
+assert role_open_count("cli-engineer", _own, ["acme/cli"], _prs) == 2, "two PRs wait on a person and hold no slot"
+assert role_waiting_count("cli-engineer", _own, ["acme/cli"], _prs) == 2
+print("OK: the budget")
