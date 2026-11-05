@@ -253,6 +253,8 @@ red, green = {"id": 9, "conclusion": "failure"}, {"id": 9, "conclusion": "succes
 assert rerun_plan(True, done, red)[0] == "rerun", "an approval re-runs the push-time failure that should now pass"
 assert rerun_plan(False, done, green)[0] == "rerun", "a dismissal re-runs the push-time pass that should now fail"
 assert rerun_plan(True, done, green)[0] == "none", "agreeing rows: nothing to re-run"
+assert rerun_plan(True, {**done, "run_attempt": 2}, red)[0] == "rerun"
+assert rerun_plan(True, {**done, "run_attempt": 3}, red)[0] == "none", "two rows that never agree stop re-running each other"
 assert rerun_plan(False, done, red)[0] == "none", "a COMMENTED review on an unapproved PR re-runs nothing"
 assert rerun_plan(True, done, {"id": 9, "conclusion": "cancelled"})[0] == "rerun", "a cancelled push-time job is not a pass"
 assert rerun_plan(True, done, {"id": 9, "conclusion": "skipped"})[0] == "none", "a skipped job (a draft) stays skipped"
