@@ -739,11 +739,17 @@ assert _wf["rerun"] == [] and _wf["wake"] is None, _wf
 # A person's approval: they took it from here. The red row is re-read, a FAIL wakes nobody, and a workflow PR's row clears.
 assert _fp({_RV: _run(1, "failure")}, {1: [_ran]}, [_V("FAIL")], approved=True) == {"rerun": [1], "wake": None, "stuck": []}
 assert _fp({_RV: _run(1, "failure")}, {1: [_ran]}, workflow_pr=True, approved=True)["rerun"] == [1]
-assert person_approved([{"state": "APPROVED", "commit_id": _H, "user": {"login": "acme-owner"}}], _H)
-assert not person_approved([{"state": "APPROVED", "commit_id": "b", "user": {"login": "acme-owner"}}], _H), "an older head's approval isn't this head's"
-assert not person_approved([{"state": "APPROVED", "commit_id": _H, "user": {"login": "x[bot]"}}], _H)
-assert not person_approved([{"state": "COMMENTED", "commit_id": _H, "user": {"login": "acme-owner"}}], _H)
-assert not person_approved([{"state": "APPROVED", "commit_id": _H, "user": None}], _H), "a deleted account approves nothing"
+_rv = lambda state="APPROVED", sha=_H, who="acme-owner", assoc="OWNER", at="2026-11-01T00:00:00Z": {"state": state, "commit_id": sha, "user": {"login": who} if who else None, "author_association": assoc, "submitted_at": at}  # noqa: E731
+assert person_approved([_rv()], _H) and person_approved([_rv(assoc="COLLABORATOR")], _H)
+assert not person_approved([_rv(sha="b")], _H), "an older head's approval isn't this head's"
+assert not person_approved([_rv(who="x[bot]")], _H)
+assert not person_approved([_rv("COMMENTED")], _H)
+assert not person_approved([_rv(who=None)], _H), "a deleted account approves nothing"
+assert not person_approved([_rv(assoc="NONE")], _H) and not person_approved([_rv(assoc="CONTRIBUTOR")], _H), "anyone can review a public repo: a stranger's approval is none"
+assert not person_approved([_rv(), _rv("CHANGES_REQUESTED", at="2026-11-02T00:00:00Z")], _H), "a later change request takes it back"
+assert not person_approved([_rv(), _rv("CHANGES_REQUESTED", who="acme-second", assoc="MEMBER")], _H), "another writer's change request stands"
+assert person_approved([_rv("CHANGES_REQUESTED"), _rv(at="2026-11-02T00:00:00Z")], _H), "the same writer's later approval lifts it"
+assert person_approved([_rv(), _rv("COMMENTED", at="2026-11-02T00:00:00Z")], _H), "a comment changes nothing"
 # The advisory security job failing in the same run moves nothing.
 assert _fp({_RV: _run(1, "failure")}, {1: [{**_ran, "name": "claude-security-review"}, {"name": "claude-review", "conclusion": "success", "steps": []}]}) == {"rerun": [], "wake": None, "stuck": []}
 # A job that lost its runner is re-run in any workflow, the gate's too; the code wasn't what failed.
@@ -765,8 +771,11 @@ _m = FOLLOW_MARK.format(sha=_H, why="conflict")
 assert follow_marked([{"user": {"login": next(iter(_tenant.router_logins()))}, "body": _m}], _H, "conflict")
 assert not follow_marked([{"user": {"login": "acme-owner"}, "body": _m}], _H, "conflict"), "a person pasting the marker isn't the router"
 assert not follow_marked([], _H, "conflict")
-assert pr_role({"head": {"ref": "agent/cli-engineer/x"}}, "acme/api") == "cli-engineer"
-assert pr_role({"head": {"ref": "agent/no-such-role/x"}}, "acme/cli") == "cli-engineer", "a role with no file falls to the repo's owner"
+_own_pr = {"user": {"login": "acme-cli-engineer[bot]"}, "head": {"ref": "agent/cli-engineer/x"}}
+assert pr_role(_own_pr, "acme/cli") == "cli-engineer"
+assert pr_role({"user": {"login": "acme-cli-engineer[bot]"}, "head": {"ref": "agent/no-such-role/x"}}, "acme/cli") == "cli-engineer", "a role with no file falls to the repo's owner"
+assert pr_role({"user": {"login": "acme-api-engineer[bot]"}, "head": {"ref": "agent/router/x"}}, "acme/cli") == "cli-engineer", "a branch name starts no workflow role"
+assert pr_role({"user": {"login": "someone"}, "head": {"ref": "agent/clerk/x"}}, "acme/cli") == "cli-engineer", "a branch name alone is a claim, not a role"
 print("OK: follow-through")
 
 # The budget counts what the role itself has to move; what waits on a person is bounded apart.
@@ -781,10 +790,18 @@ print("OK: the budget")
 _FT = {"number": 8, "user": {"login": "acme-cli-engineer[bot]"}, "head": {"sha": "c" * 40, "ref": "agent/cli-engineer/x"}, "labels": [], "html_url": "https://github.com/acme/cli/pull/8"}
 
 
-def _ft_gh(marks=(), busy=False, refuse_read=False):
+def _ft_gh(marks=(), busy=False, refuse_read=False, refuse_dispatch=False, deleted=None):
     def fake(args, **kw):
         if args[0] != "gh":
             return _Probe(0, "")
+        if args[:3] == ["gh", "api", "-X"]:
+            if args[3] == "DELETE":
+                deleted.append(args[4])
+            if refuse_dispatch and args[4].endswith("/dispatches"):
+                return _Probe(1, "gh: Resource not accessible by integration (HTTP 403)")
+            p = _Probe(0, "")
+            p.stdout = _j.dumps({"id": 991} if args[4].endswith("/comments") else {})
+            return p
         path = args[2] if len(args) > 2 and not args[2].startswith("-") else ""
         base, _, q = path.partition("?")
         out = None
@@ -808,12 +825,12 @@ def _ft_gh(marks=(), busy=False, refuse_read=False):
     return fake
 
 
-def _ft_pass(**kw):
+def _ft_pass(dry=True, **kw):
     _o = _io.StringIO()
     _sleep, _tenant.time.sleep = _tenant.time.sleep, lambda s: None
     _sp.run = _ft_gh(**kw)
     try:
-        sys.argv = ["router.py", "--dry-run", "--policy-dir", str(FIX), "--policy-repo", "acme/policy"]
+        sys.argv = ["router.py", *(["--dry-run"] if dry else []), "--policy-dir", str(FIX), "--policy-repo", "acme/policy"]
         with _ctx.redirect_stdout(_o), _ctx.redirect_stderr(_io.StringIO()):
             code = _tenant.main()
     finally:
@@ -837,6 +854,10 @@ assert not any("follow-through" in d for d in _ft_pass(busy=True)[1]["dispatched
 _code, _rep = _ft_pass(refuse_read=True)
 assert _code == 1 and any("follow_through acme/cli" in r for r in _rep["refused"]), _rep
 assert "acme/cli" in str(_rep["refused"]) and "policy#40 digest answers -> clerk" in _rep["dispatched"], "a read it can't make ends one turn, and the report is still printed"
+_gone_marks: list = []
+_code, _rep = _ft_pass(dry=False, refuse_dispatch=True, deleted=_gone_marks)
+assert _code == 1 and "repos/acme/cli/issues/comments/991" in _gone_marks, (_gone_marks, _rep)
+assert not any("follow-through" in d for d in _rep["dispatched"]), "a refused dispatch takes its marker back, so the next pass tries again"
 _TOOL_REQ["labels"] = _TOOL_REQ_SAVED
 _saved_rf = _tenant.role_file
 _tenant.role_file = lambda role, roles_dir=None: {"writes": {"repos": []}}
