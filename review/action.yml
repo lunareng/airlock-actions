@@ -1,5 +1,5 @@
 name: claude review
-description: 'Claude reviews the pull request against the autonomy charter (signal, intent, floors, proof, secrets, goals) and ends its comment with a verdict on the head commit, which the last step turns into this job''s result. The verdict binds agents'' PRs; anyone else''s gets it as a warning. Run it as the steps of a job named claude-review, with permissions contents: read, pull-requests: write, issues: write, id-token: write.'
+description: 'Claude reviews the pull request against the autonomy charter (signal, intent, floors, proof, secrets, goals) and ends its comment with a verdict on the head commit, which the last step turns into this job''s result. The verdict binds agents'' PRs; anyone else''s gets it as a warning. Run it as the steps of a job named claude-review, with permissions contents: read, pull-requests: write, issues: write, id-token: write, actions: write (a person''s review re-runs the push-time job, so the PR''s rows agree).'
 inputs:
   claude-code-oauth-token:
     description: the token Claude Code runs on (pass secrets.CLAUDE_CODE_OAUTH_TOKEN)
@@ -13,6 +13,9 @@ inputs:
   human-owner:
     description: who merges L1/L2 PRs, as the reviewer should name them
     default: the human owner
+  rerun-wait-seconds:
+    description: on a review, how long to wait for a push-time run still going, so the verdict it posts is read
+    default: "600"
 runs:
   using: composite
   steps:
@@ -52,10 +55,25 @@ runs:
       fi
       if git diff --quiet "origin/$BASE_REF" -- .github/workflows/; then echo "workflows=false" >> "$GITHUB_OUTPUT"; else echo "workflows=true" >> "$GITHUB_OUTPUT"; fi
     shell: bash
+  # A head that already has its answer isn't reviewed again: a re-run reads it. That is what makes re-running the push-time
+  # job cheap, for a person, for the router's follow_through, and for the step at the end of this file. New work is a new
+  # head, and a new head has no verdict.
+  - id: already
+    if: github.event_name == 'pull_request'
+    shell: bash
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      PR: ${{ github.event.pull_request.number }}
+      SHA: ${{ github.event.pull_request.head.sha }}
+    run: |
+      n="$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" --jq '.[] | select(.user.login == "claude[bot]") | .body | split("\n") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0)) | last // "" | select(. == "Verdict: PASS ('"$SHA"')" or . == "Verdict: FAIL ('"$SHA"')")' | wc -l)"
+      a="$(gh api --paginate "repos/$REPO/pulls/$PR/reviews?per_page=100" --jq ".[] | select(.state == \"APPROVED\" and .commit_id == \"$SHA\" and (.user.login | endswith(\"[bot]\") | not)) | .id" | wc -l)"
+      if [ "$n" -gt 0 ] || [ "$a" -gt 0 ]; then echo "found=true" >> "$GITHUB_OUTPUT"; echo "::notice::this head already has its verdict or a person's approval; reading it, not reviewing again"; else echo "found=false" >> "$GITHUB_OUTPUT"; fi
   # The reviewer's prompt, built once from the PR's values (passed through env, never expanded in a script) so both
   # attempts below read the same text.
   - id: prompt
-    if: github.event_name == 'pull_request' && steps.docs.outputs.only != 'true' && steps.docs.outputs.workflows != 'true'
+    if: github.event_name == 'pull_request' && steps.docs.outputs.only != 'true' && steps.docs.outputs.workflows != 'true' && steps.already.outputs.found != 'true'
     shell: bash
     env:
       HUMAN: ${{ inputs.human-owner }}
@@ -88,7 +106,7 @@ runs:
           f.write(f"text<<{eof}\n{text}\n{eof}\n")
       PY
   - id: review
-    if: github.event_name == 'pull_request' && steps.docs.outputs.only != 'true' && steps.docs.outputs.workflows != 'true'
+    if: github.event_name == 'pull_request' && steps.docs.outputs.only != 'true' && steps.docs.outputs.workflows != 'true' && steps.already.outputs.found != 'true'
     uses: anthropics/claude-code-action@aa8a7738e48bf30a40ee499ce818bef081c5ab5e # v1.0.257
     with:
       claude_code_oauth_token: ${{ inputs.claude-code-oauth-token }}
@@ -102,7 +120,7 @@ runs:
   # Did it post a verdict for this head? Twice on lunareng/airlock it finished green without one, and a re-run fixed it
   # (lunareng/autonomy#204), so it gets one more attempt before the verdict step decides.
   - id: posted
-    if: github.event_name == 'pull_request' && steps.docs.outputs.only != 'true' && steps.docs.outputs.workflows != 'true'
+    if: github.event_name == 'pull_request' && steps.docs.outputs.only != 'true' && steps.docs.outputs.workflows != 'true' && steps.already.outputs.found != 'true'
     shell: bash
     env:
       GH_TOKEN: ${{ github.token }}
@@ -113,7 +131,7 @@ runs:
       n="$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" --jq '.[] | select(.user.login == "claude[bot]") | .body | split("\n") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0)) | last // "" | select(. == "Verdict: PASS ('"$SHA"')" or . == "Verdict: FAIL ('"$SHA"')")' | wc -l)"
       if [ "$n" -gt 0 ]; then echo "found=true" >> "$GITHUB_OUTPUT"; else echo "found=false" >> "$GITHUB_OUTPUT"; echo "::warning::the review posted no verdict for $SHA; running it once more"; fi
   - id: review-again
-    if: github.event_name == 'pull_request' && steps.docs.outputs.only != 'true' && steps.docs.outputs.workflows != 'true' && steps.posted.outputs.found == 'false'
+    if: github.event_name == 'pull_request' && steps.docs.outputs.only != 'true' && steps.docs.outputs.workflows != 'true' && steps.already.outputs.found != 'true' && steps.posted.outputs.found == 'false'
     uses: anthropics/claude-code-action@aa8a7738e48bf30a40ee499ce818bef081c5ab5e # v1.0.257
     with:
       claude_code_oauth_token: ${{ inputs.claude-code-oauth-token }}
@@ -124,9 +142,23 @@ runs:
         --model ${{ inputs.model }} --max-turns 40
         --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh api:*)"
       prompt: ${{ steps.prompt.outputs.text }}
+  # A review can land seconds after a push, while the push-time run is still reviewing (a role's own review, say). Read
+  # its verdict, don't race it: on lunareng/airlock#69 this run failed in 6 seconds, 94 before the review passed.
+  - name: wait for the push-time review
+    if: github.event_name == 'pull_request_review'
+    shell: bash
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      HEAD: ${{ github.event.pull_request.head.sha }}
+      RUN_ID: ${{ github.run_id }}
+      WAIT: ${{ inputs.rerun-wait-seconds }}
+      GATE: ${{ github.action_path }}/../gate
+    run: python3 -I "$GATE/rerun.py" --job claude-review --wait-only --wait-seconds "$WAIT" || echo "::warning::could not read the push-time run (does this job have actions:write?)"
   # The verdict step: academy#117's judge rounds (only claude[bot]'s comments, only this head, the last line matched
   # whole) and api#1086 (claude-code-action's token exchange refuses a PR that changes a workflow).
   - name: verdict
+    id: verdict
     env:
       GH_TOKEN: ${{ github.token }}
       ONLY_DOCS: ${{ steps.docs.outputs.only }}
@@ -189,3 +221,17 @@ runs:
           echo "::warning::$result; this PR is not an agent's, so the person merging it is its reviewer"; exit 0 ;;
       esac
     shell: bash
+  # GitHub keeps one row per event, so a person's approval used to add a green row beside the push's stale red one, and
+  # the PR stayed blocked until someone re-ran the push (lunareng/autonomy#140: an hour, by hand). As the gate does
+  # (autonomy#157), make the push-time row say what this run says; with the `already` step above, that re-run only reads.
+  - name: re-run the push-time check
+    if: always() && github.event_name == 'pull_request_review'
+    shell: bash
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      HEAD: ${{ github.event.pull_request.head.sha }}
+      RUN_ID: ${{ github.run_id }}
+      PASSED: ${{ steps.verdict.outcome == 'success' }}
+      GATE: ${{ github.action_path }}/../gate
+    run: python3 -I "$GATE/rerun.py" --job claude-review --passed "$PASSED" --wait-seconds 60 || echo "::warning::could not re-run the push-time check (does this job have actions:write?); re-run it by hand"
