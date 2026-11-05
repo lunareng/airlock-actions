@@ -38,12 +38,12 @@ jobs:
       - uses: lunareng/airlock-actions/review/security@<airlock:ref><airlock:ref_note>
         with:
           claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-  # After a person's review, the push-time claude-review row says what the review's run said. Its own job, so
-  # actions: write never reaches the job above. It must not be named claude-review.
+  # The two claude-review rows, one per event, say the same thing. Its own job, so actions: write never reaches the job
+  # above. It must not be named claude-review.
   rows:
     name: claude-review-rows
     needs: review
-    if: ${{ always() && github.event_name == 'pull_request_review' && (needs.review.result == 'success' || needs.review.result == 'failure') }}
+    if: ${{ always() && (needs.review.result == 'success' || needs.review.result == 'failure') }}
     runs-on: <airlock:runner><airlock:runner_note>
     timeout-minutes: 5
     permissions:

@@ -235,7 +235,7 @@ with tempfile.TemporaryDirectory() as d:
 print("ok  L1 second key through the CLI; L2 and L3 unchanged")
 
 # A review re-runs the push-time job when its verdict differs, so the PR keeps one row per check (autonomy#157).
-from rerun import job_named, latest_run, rerun_plan  # noqa: E402
+from rerun import job_named, latest_run, other_event, rerun_plan  # noqa: E402
 runs = [
     {"id": 1, "event": "pull_request", "created_at": "2026-10-28T00:47:00Z", "status": "completed"},
     {"id": 3, "event": "pull_request_review", "created_at": "2026-10-29T13:28:00Z", "status": "in_progress"},
@@ -243,6 +243,9 @@ runs = [
 ]
 assert latest_run(runs)["id"] == 2, "the newest pull_request run, never a review run"
 assert latest_run([runs[1]]) is None and latest_run([]) is None
+assert latest_run(runs, "pull_request_review")["id"] == 3, "from a push, the review's row is the other one (airlock-actions#40)"
+assert other_event("pull_request") == "pull_request_review" and other_event("pull_request_review") == "pull_request"
+assert other_event(None) == "pull_request", "without an event, the behaviour it always had"
 jobs = [{"id": 10, "name": "claude-review", "conclusion": "failure"}, {"id": 11, "name": "claude-security-review", "conclusion": "success"}]
 assert job_named(jobs, "claude-review")["id"] == 10 and job_named(jobs, "autonomy-gate") is None
 done = {"id": 2, "status": "completed"}
@@ -265,7 +268,7 @@ print("ok  review re-runs the push-time job only when the verdicts differ")
 # nor the gate's own steps may continue on error, so a COMMENTED review can never turn the row green.
 action = yaml.safe_load((ROOT / "gate" / "action.yml").read_text())
 names = [st.get("name") for st in action["runs"]["steps"]]
-assert names.index("re-run the push-time check") < names.index("verdict") == len(names) - 1, names
+assert names.index("make the other row agree") < names.index("verdict") == len(names) - 1, names
 assert not any("continue-on-error" in st for st in action["runs"]["steps"]), "no gate step continues on error"
 assert names.index("airlock (a read of the policy repo; no policy, no gate)") < names.index("compute level"), names
 print("ok  the gate action re-runs before its verdict and keeps it")

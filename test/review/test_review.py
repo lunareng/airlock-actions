@@ -238,6 +238,7 @@ TEMPLATE = yaml.safe_load((ROOT / "adopt" / "templates" / "claude-review.yml").r
 assert TEMPLATE["permissions"]["actions"] == "read" and TEMPLATE["jobs"]["rows"]["permissions"] == {"actions": "write", "pull-requests": "read"}
 assert TEMPLATE["jobs"]["rows"]["name"] != "claude-review" and "review/rerun@" in TEMPLATE["jobs"]["rows"]["steps"][0]["uses"]
 assert "needs.review.result == 'failure'" in TEMPLATE["jobs"]["rows"]["if"], "a cancelled review says nothing about the row"
+assert "event_name" not in TEMPLATE["jobs"]["rows"]["if"], "both directions: a push can clear a stale review row too"
 assert wait["if"] == "github.event_name == 'pull_request_review'" and "--wait-only" in wait["run"]
 assert again["env"]["PASSED"] == "${{ inputs.passed }}"
 assert "--job claude-review" in again["run"] and "${{" not in again["run"]

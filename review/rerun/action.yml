@@ -1,8 +1,8 @@
 name: claude review, the push-time row
 description: >
-  After a person's review, makes the push-time claude-review row say what the review-time run said, so a PR keeps one
-  answer (lunareng/autonomy#140). Run it as its own job, with permissions actions: write and pull-requests: read, after the
-  review job (needs: review), only when that job passed or failed on a pull_request_review. It is a separate job so that
+  Makes a PR's two claude-review rows, one per event, say the same thing, since GitHub holds both against the required
+  check (lunareng/autonomy#140, lunareng/airlock-actions#40). Run it as its own job, with permissions actions: write and
+  pull-requests: read, after the review job (needs: review), only when that job passed or failed. It is a separate job so that
   actions: write never reaches the job that runs a model over the PR. It must not be named claude-review.
 inputs:
   passed:
@@ -24,13 +24,14 @@ runs:
         echo "${GH_SHA256}  $dir/gh.tar.gz" | sha256sum -c -
         tar xzf "$dir/gh.tar.gz" -C "$dir" --strip-components=2 "gh_${GH_VERSION}_linux_amd64/bin/gh"
         echo "$dir" >> "$GITHUB_PATH"
-    - name: re-run the push-time check
+    - name: make the other row agree
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
         REPO: ${{ github.repository }}
         HEAD: ${{ github.event.pull_request.head.sha }}
         RUN_ID: ${{ github.run_id }}
+        EVENT: ${{ github.event_name }}
         PR: ${{ github.event.pull_request.number }}
         PASSED: ${{ inputs.passed }}
         GATE: ${{ github.action_path }}/../../gate
@@ -38,4 +39,4 @@ runs:
         # A re-run joins the push's concurrency group, so re-running an old head's job could cancel the new head's review.
         now="$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha)" || { echo "::warning::could not read the PR's head; re-run the push-time check by hand"; exit 0; }
         if [ "$now" != "$HEAD" ]; then echo "::notice::the PR has moved past $HEAD; nothing to re-run"; exit 0; fi
-        python3 -I "$GATE/rerun.py" --job claude-review --passed "$PASSED" --wait-seconds 60 || echo "::warning::could not re-run the push-time check; re-run it by hand"
+        python3 -I "$GATE/rerun.py" --job claude-review --passed "$PASSED" --wait-seconds 60 || echo "::warning::could not re-run the other claude-review row; re-run it by hand"
