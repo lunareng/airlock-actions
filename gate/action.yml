@@ -8,8 +8,8 @@ description: >
   unless Airlock's stamp credits a role with its head commit (or the owner approved that commit). At L1
   auto-merge must be off, so a person merges, and the approval is enough unless the PR owes proof; then it
   needs a second key (autonomy#146): every `## Proof owed` item answered by the owner's `## Proof` comment. It reads the tenant's policy repo through Airlock (POST /v1/read): config.yaml, every role's login and this
-  repository's file there, so the caller's workflow must be .github/workflows/autonomy-gate.yml. On a review, it
-  re-runs the push-time job when the verdict differs, so the PR keeps one autonomy-gate row (autonomy#157).
+  repository's file there, so the caller's workflow must be .github/workflows/autonomy-gate.yml. It re-runs
+  the other event's job when the verdict differs, so both autonomy-gate rows agree (autonomy#157).
   The caller job needs permissions contents:read, pull-requests:write, id-token:write and actions:write, and a
   checkout with fetch-depth 0.
 inputs:
@@ -168,21 +168,24 @@ runs:
           [ "$l" = "$LEVEL" ] || gh api -X DELETE "repos/$REPO/issues/$PR/labels/level:$l" >/dev/null 2>&1 || true
         done
         gh api -X POST "repos/$REPO/issues/$PR/labels" -f "labels[]=level:$LEVEL" >/dev/null
-    # GitHub keeps one row per event, so an approval's green row used to sit beside the push's stale red one
-    # (autonomy#157). The push-time job is re-run when this verdict differs; this job still ends on its own verdict,
-    # since a green row named autonomy-gate passes the required check whatever the other row says.
-    - name: re-run the push-time check
-      if: github.event_name == 'pull_request_review' && steps.gate.outputs.passed != ''
+    # GitHub keeps one row per event and holds both against the required check, so a stale red row on either side blocks
+    # the merge (autonomy#157; lunareng/airlock-actions#40). The other event's job is re-run when this verdict differs;
+    # this job still ends on its own verdict.
+    - name: make the other row agree
+      if: steps.gate.outputs.passed != ''
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
         REPO: ${{ github.repository }}
         HEAD: ${{ github.event.pull_request.head.sha }}
         RUN_ID: ${{ github.run_id }}
+        EVENT: ${{ github.event_name }}
         PASSED: ${{ steps.gate.outputs.passed }}
         WAIT: ${{ inputs.rerun-wait-seconds }}
         GATE: ${{ github.action_path }}
-      run: python -I "$GATE/rerun.py" --job autonomy-gate --passed "$PASSED" --wait-seconds "$WAIT"
+      run: |
+        # A push's verdict stands whether or not the review row could be reached: that row is the review's to answer for.
+        python -I "$GATE/rerun.py" --job autonomy-gate --passed "$PASSED" --wait-seconds "$WAIT" || [ "$EVENT" = pull_request ]
     - name: verdict
       shell: bash
       env:

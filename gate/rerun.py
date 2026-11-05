@@ -1,20 +1,23 @@
 #!/usr/bin/env python3
-"""Make a pull request's push-time check show the verdict a review just changed (autonomy#157).
+"""Make a pull request's two rows of a check agree (autonomy#157).
 
 The gate and claude-review run on `pull_request` and on `pull_request_review`, and GitHub keeps one check row per
 event. An approval that passes an agent's L1/L2 PR used to add a green review-time row beside the push-time red one,
-so a mergeable PR read "1 failing". After the review-time job computes its own verdict, this re-runs the push-time
-job when its result disagrees, so that row tracks the PR's current state: a failed one that should now pass, and a
-passed one a dismissal should now fail. The review-time job keeps its own verdict as its result: a green row named
+so a mergeable PR read "1 failing". GitHub holds both rows against the required check, so a red one on either side
+blocks the merge. After either job computes its own verdict, this re-runs the other event's job when its result
+disagrees, so both rows track the PR's current state. Review to push: an approval clears a push-time failure. Push to
+review: turning auto-merge off an L1 PR passes the push-time row, and only this clears the review-time row that failed
+while it was on (lunareng/airlock-actions#40). The review-time job keeps its own verdict as its result: a green row named
 `autonomy-gate` is a passing required check, so ending it green on a failing verdict would let a COMMENTED review
 unlock a PR.
 
 Library (stdlib only: the claude-review job has no pyyaml):
-  latest_run(runs) -> the newest `pull_request` run in a list of workflow runs, or None
+  latest_run(runs, event) -> the newest run of that event in a list of workflow runs, or None
+  other_event(event) -> the event whose row this run must keep in step
   job_named(jobs, name) -> that run's job with the check's name, or None
   rerun_plan(passed, run, job) -> (action, why), action "none", "wait" or "rerun"
 
-CLI (a pull_request_review job, after its verdict; env GH_TOKEN, REPO, HEAD, RUN_ID):
+CLI (a pull_request or pull_request_review job, after its verdict; env GH_TOKEN, REPO, HEAD, RUN_ID, EVENT):
   rerun.py --job <check name> --passed true|false [--wait-seconds N]
     Exit 0: nothing to re-run, or the push-time job was re-run (the summary names the run and the head).
     Exit 1: the re-run API refused, or the push-time run was still going after N seconds (the error names the run).
@@ -30,8 +33,12 @@ import sys
 import time
 
 
-def latest_run(runs: list[dict]) -> dict | None:
-    prs = [r for r in runs if isinstance(r, dict) and r.get("event") == "pull_request"]
+def other_event(event: str | None) -> str:
+    return "pull_request_review" if event == "pull_request" else "pull_request"
+
+
+def latest_run(runs: list[dict], event: str = "pull_request") -> dict | None:
+    prs = [r for r in runs if isinstance(r, dict) and r.get("event") == event]
     return max(prs, key=lambda r: (r.get("created_at") or "", r.get("id") or 0), default=None)
 
 
@@ -42,7 +49,7 @@ def job_named(jobs: list[dict], name: str) -> dict | None:
 
 def rerun_plan(passed: bool, run: dict | None, job: dict | None) -> tuple[str, str]:
     if run is None:
-        return "none", "no pull_request run for this head: this run's verdict is the only one"
+        return "none", "no run of the other event for this head: this run's verdict is the only one"
     if run.get("status") != "completed":
         return "wait", f"gate run {run.get('id')} is still {run.get('status')}"
     if job is None:
@@ -70,12 +77,13 @@ def main() -> int:
         ap.error("--passed is required without --wait-only")
     repo, head, run_id = os.environ["REPO"], os.environ["HEAD"], os.environ["RUN_ID"]
     passed = a.passed == "true"
+    other = other_event(os.environ.get("EVENT", "pull_request_review"))
 
     workflow = json.loads(gh(f"repos/{repo}/actions/runs/{run_id}"))["workflow_id"]
     deadline = time.time() + a.wait_seconds
     while True:
-        runs = json.loads(gh(f"repos/{repo}/actions/workflows/{workflow}/runs?event=pull_request&head_sha={head}&per_page=100"))
-        run = latest_run(runs.get("workflow_runs") or [])
+        runs = json.loads(gh(f"repos/{repo}/actions/workflows/{workflow}/runs?event={other}&head_sha={head}&per_page=100"))
+        run = latest_run(runs.get("workflow_runs") or [], other)
         job = None
         if run is not None and run.get("status") == "completed":
             job = job_named(json.loads(gh(f"repos/{repo}/actions/runs/{run['id']}/jobs?per_page=100")).get("jobs") or [], a.job)
