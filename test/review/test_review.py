@@ -188,7 +188,7 @@ print("ok  no verdict is explained on the PR once per commit; a workflow PR skip
 
 
 # A re-run of a head with its answer reads it: nobody pays for a second review to turn a row green.
-def already(comments=(), reviews=(), author="acme-airlock[bot]"):
+def already(comments=(), reviews=(), author="acme-airlock[bot]", trigger="matthew"):
     bin_dir = tempfile.mkdtemp()
     Path(bin_dir, "gh").write_text(GH)
     os.chmod(Path(bin_dir, "gh"), 0o755)
@@ -197,12 +197,13 @@ def already(comments=(), reviews=(), author="acme-airlock[bot]"):
     out = Path(bin_dir, "out")
     subprocess.run(["bash", "-e", "-o", "pipefail", "-c", STEPS["already"]["run"]], check=True, capture_output=True, text=True,
                    env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "CANNED": str(canned), "GITHUB_OUTPUT": str(out),
-                        "GH_TOKEN": "x", "REPO": "acme/api", "PR": "7", "SHA": SHA, "AUTHOR": author, "AGENTS": "*[bot]"})
+                        "GH_TOKEN": "x", "REPO": "acme/api", "PR": "7", "SHA": SHA, "AUTHOR": author, "AGENTS": "*[bot]", "TRIGGER": trigger})
     return out.read_text().strip()
 
 
 assert already([claude(f"fine\nVerdict: PASS ({SHA})")]) == "found=true"
-assert already([claude(f"Verdict: FAIL ({SHA})")]) == "found=false", "a FAIL is reviewed again: a fixed PR body is new work"
+assert already([claude(f"Verdict: FAIL ({SHA})")]) == "found=false", "a person's re-run reviews a FAIL again: a fixed PR body is new work"
+assert already([claude(f"Verdict: FAIL ({SHA})")], trigger="github-actions[bot]") == "found=true", "a bot's re-run reads it: a dismissed approval rolls no dice"
 assert already(reviews=[approval("matthew")]) == "found=true", "a person's approval of an agent's head is its answer"
 assert already(reviews=[approval("matthew")], author="matthew") == "found=false", "a person's own PR is still reviewed"
 assert already([claude(f"Verdict: PASS ({SHA})")], author="matthew") == "found=true"
