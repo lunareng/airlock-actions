@@ -67,6 +67,54 @@ export async function call(origin, path, proof, body, signal) {
   return { status: res.status, out: out && typeof out === 'object' && !Array.isArray(out) ? out : {} };
 }
 
+// Trying a route again (lunareng/airlock-actions#52). While an Airlock task is being replaced, API Gateway answers
+// for it with its own 500 or 503 ({"message": …}) for about 90 s, so a call is tried again only when the answer
+// can't have come from Airlock: no answer at all (a network error or a timeout), or a 500, 502, 503 or 504 with
+// neither Airlock's `decision` nor its `error` (its own 503 {"error":"timeout"}). Anything Airlock said is final.
+// Up to 6 attempts, 2, 5, 10, 20 and 40 s apart plus up to a fifth more, each up to 20 s and with its own OIDC
+// token (Airlock takes each one once, and an attempt cut off by its timeout may have spent it), all inside 110 s:
+// the step's own limit in a role workflow is 2 minutes.
+export const WAITS = [2000, 5000, 10000, 20000, 40000];
+export const ATTEMPT_MS = 20000;
+export const BUDGET_MS = 110000;
+// An attempt is only started with at least this long left for it.
+const LEAST_MS = 5000;
+
+export const notAirlocks = ({ status, out }) => [500, 502, 503, 504].includes(status) && !('decision' in out) && !('error' in out);
+
+// How long to wait after attempt n (0-based) failed, elapsed ms after the first began; null: no attempt is left.
+export function retryWait(n, elapsed, random = Math.random) {
+  if (n >= WAITS.length) return null;
+  const wait = Math.round(WAITS[n] * (1 + 0.2 * random()));
+  return elapsed + wait + LEAST_MS > BUDGET_MS ? null : wait;
+}
+
+// The route, proven by a fresh OIDC token, tried again on what notAirlocks says isn't Airlock's answer, one warning
+// line per retry. { proof: null } when the job has no OIDC; { answer } when something answered; { error } when
+// nothing did on the last attempt.
+export async function persist(origin, path, body) {
+  const start = Date.now();
+  for (let n = 0; ; n++) {
+    const signal = AbortSignal.timeout(Math.max(1, Math.min(ATTEMPT_MS, start + BUDGET_MS - Date.now())));
+    let result;
+    let got;
+    try {
+      const proof = await oidc(origin, signal);
+      if (!proof) return { proof: null };
+      result = { answer: await call(origin, path, proof, body, signal) };
+      if (!notAirlocks(result.answer)) return result;
+      got = `HTTP ${result.answer.status} from in front of Airlock`;
+    } catch (error) {
+      result = { error };
+      got = `no answer (${error?.name ?? 'Error'})`;
+    }
+    const wait = retryWait(n, Date.now() - start);
+    if (wait === null) return result;
+    annotate('warning', `Airlock: ${path} attempt ${n + 1} of ${WAITS.length + 1} got ${got}; trying again in ${Math.round(wait / 1000)} s`);
+    await new Promise((done) => setTimeout(done, wait));
+  }
+}
+
 // The hand-back: the read-only token ended at GitHub, and the run's token handed back to Airlock (POST
 // /v1/revoke, with a fresh OIDC token and the same role), so both end with the run. It never throws and never
 // fails the job: a token it can't hand back still ends with its hour, and the log says so.
@@ -87,17 +135,11 @@ export async function handBack({ origin, role, token, readToken }) {
   }
   if (!token) { say('Airlock: no token to hand back'); return; }
   if (!origin) { missed(`Airlock: no Airlock to hand the token back to; ${expires}`); return; }
-  const signal = AbortSignal.timeout(20000);
-  let answer;
-  try {
-    const proof = await oidc(origin, signal);
-    if (!proof) { missed(`Airlock: no OIDC token for this job (id-token: write missing); ${expires}`); return; }
-    answer = await call(origin, '/v1/revoke', proof, { role, token }, signal);
-  } catch (err) {
-    missed(`Airlock: unreachable (${err?.name ?? 'Error'}); ${expires}`);
-    return;
-  }
-  const { status, out } = answer;
+  // Tried again by the same rule as the mint: only what can't be Airlock's answer.
+  const tried = await persist(origin, '/v1/revoke', { role, token });
+  if (tried.proof === null) { missed(`Airlock: no OIDC token for this job (id-token: write missing); ${expires}`); return; }
+  if (tried.error) { missed(`Airlock: unreachable (${tried.error?.name ?? 'Error'}); ${expires}`); return; }
+  const { status, out } = tried.answer;
   if (status === 200 && out.revoked === true) say(`Airlock: token handed back, run ${out.run ?? '-'}`);
   else if (status === 404) missed(`Airlock: revoke not available; ${expires}`);
   else if (status >= 400 && status < 500 && out.decision === 'refused') missed(`Airlock: ${status} refused (${out.reason}: ${out.message}); ${expires}`);

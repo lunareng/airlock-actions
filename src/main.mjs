@@ -3,7 +3,7 @@
 // token are masked before anything else and reach later steps only as outputs; the post step hands them back.
 // Claude Code's telemetry env, when Airlock sends it (the tenant sends role runs' telemetry to Airlock), goes to
 // every later step through GITHUB_ENV, live or shadow: telemetry by default, with nothing to configure.
-import { airlockOrigin, annotate, call, DEFAULT_AIRLOCK, handBack, hide, input, mask, oidc, put, safe, say } from './airlock.mjs';
+import { airlockOrigin, annotate, DEFAULT_AIRLOCK, handBack, hide, input, mask, persist, put, safe, say } from './airlock.mjs';
 
 const stop = (line) => { annotate('error', line); process.exit(1); };
 
@@ -21,16 +21,12 @@ if (!origin) stop('Airlock: airlock-url must be an https origin, like https://ai
 // Nothing is minted that couldn't be handed on and handed back.
 if (!process.env.GITHUB_OUTPUT || !process.env.GITHUB_STATE) stop('Airlock: no GITHUB_OUTPUT or GITHUB_STATE: this runs as a step of a GitHub Actions job');
 
-const signal = AbortSignal.timeout(20000);
-let answer;
-try {
-  const proof = await oidc(origin, signal);
-  if (!proof) stop('Airlock: no OIDC token for this job (add permissions: id-token: write)');
-  answer = await call(origin, '/v1/mint', proof, { role, ...(dispatched ? { signal: dispatched } : {}), ...(reason ? { reason } : {}), ...(clock ? { clock: true } : {}) }, signal);
-} catch (err) {
-  stop(`Airlock: unreachable (${err?.name ?? 'Error'}); no token`);
-}
-const { status, out } = answer;
+// Tried again only when the answer can't be Airlock's (API Gateway's own 5xx while a task is replaced, or none at
+// all); Airlock's own answer, a refusal or its timeout included, is final (lunareng/airlock-actions#52).
+const tried = await persist(origin, '/v1/mint', { role, ...(dispatched ? { signal: dispatched } : {}), ...(reason ? { reason } : {}), ...(clock ? { clock: true } : {}) });
+if (tried.proof === null) stop('Airlock: no OIDC token for this job (add permissions: id-token: write)');
+if (tried.error) stop(`Airlock: unreachable (${tried.error?.name ?? 'Error'}); no token`);
+const { status, out } = tried.answer;
 const sessions = out.sessions && typeof out.sessions === 'object' ? Object.entries(out.sessions) : [];
 hide(out.token, out.read?.token, out.telemetry?.token, ...sessions.map(([, s]) => s?.token));
 say(`Airlock: ${status} ${out.decision ?? 'no answer'}${out.reason ? ` (${out.reason}: ${out.message})` : ''}, run ${out.run ?? '-'}`);

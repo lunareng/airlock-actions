@@ -36,6 +36,7 @@ jobs:
 - **The post step** runs on success, failure and cancel. It hands the token back to Airlock and ends the read-only token at GitHub. It never fails the job: if it can't reach Airlock, it says so, and the token ends with its hour.
 - **In shadow** (any role whose file doesn't say `identity.key_store: airlock`), the step passes, prints what Airlock would have handed out, and leaves `token` empty. Turning the role live changes nothing in this file.
 - **A refusal** fails the step with Airlock's reason and message. Each reason is listed at https://airlock.lunareng.com/docs/refusals.
+- **Retries:** both steps try again only when the answer can't have come from Airlock: no answer at all, or a 500, 502, 503 or 504 without Airlock's `decision` or `error` (API Gateway answering for a task being replaced). That is up to 6 attempts, 2, 5, 10, 20 and 40 s apart plus jitter, each with a fresh OIDC token. The whole loop stays inside 110 s, so it fits a `timeout-minutes: 2` step. Each retry is one warning line. Anything Airlock said, including a refusal or its own timeout, is final.
 
 ## Inputs and outputs
 

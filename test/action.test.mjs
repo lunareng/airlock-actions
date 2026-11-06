@@ -16,28 +16,40 @@ const VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.u
 const AIRLOCK = 'https://airlock.example';
 const TOKEN = 'ghs_TESTONLYabcdef0123456789';
 
-// One step. `answers` says what each route answers: { mint, revoke, end } as { status, body }, or 'down'.
+// One step. `answers` says what each route answers: { mint, revoke, end } as { status, body }, or 'down'; a list is
+// one answer per call, its last answering every call after. A wait of a second or more (a retry's) is written to
+// `waits` and not waited for.
 function step(script, { answers = {}, env = {}, state = {} } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'airlock-action-'));
   const sent = join(dir, 'sent');
+  const waits = join(dir, 'waits');
   const stub = join(dir, 'stub.mjs');
   writeFileSync(stub, `
     import { appendFileSync } from 'node:fs';
     const answers = ${JSON.stringify(answers)};
     let n = 0;
-    const answer = (a, fallback) => {
+    const calls = {};
+    const answer = (route, fallback) => {
+      const all = answers[route];
+      const i = calls[route] = (calls[route] ?? -1) + 1;
+      const a = Array.isArray(all) ? all[Math.min(i, all.length - 1)] : all;
       if (a === 'down') throw new TypeError('fetch failed');
       const { status, body } = a ?? fallback;
       return new Response(status === 204 ? null : typeof body === 'string' ? body : JSON.stringify(body), { status });
+    };
+    const later = globalThis.setTimeout;
+    globalThis.setTimeout = (fn, ms, ...args) => {
+      if (ms >= 1000) { appendFileSync(${JSON.stringify(waits)}, ms + '\\n'); ms = 0; }
+      return later(fn, ms, ...args);
     };
     globalThis.fetch = async (url, init = {}) => {
       const u = new URL(String(url));
       const h = Object.fromEntries(Object.entries(init.headers ?? {}).map(([k, v]) => [k.toLowerCase(), v]));
       appendFileSync(${JSON.stringify(sent)}, JSON.stringify({ url: u.href, method: init.method ?? 'GET', headers: h, body: init.body ? JSON.parse(init.body) : null }) + '\\n');
       if (u.origin === 'https://oidc.example') return new Response(JSON.stringify({ value: 'eyJoidc-' + process.pid + '-' + ++n }));
-      if (u.pathname === '/v1/mint') return answer(answers.mint, { status: 418, body: {} });
-      if (u.pathname === '/v1/revoke') return answer(answers.revoke, { status: 200, body: { revoked: true, run: '7.1' } });
-      if (u.href === 'https://api.github.test/installation/token') return answer(answers.end, { status: 204, body: '' });
+      if (u.pathname === '/v1/mint') return answer('mint', { status: 418, body: {} });
+      if (u.pathname === '/v1/revoke') return answer('revoke', { status: 200, body: { revoked: true, run: '7.1' } });
+      if (u.href === 'https://api.github.test/installation/token') return answer('end', { status: 204, body: '' });
       return new Response('{}', { status: 418 });
     };`);
   const output = join(dir, 'output');
@@ -71,6 +83,7 @@ function step(script, { answers = {}, env = {}, state = {} } = {}) {
     state: kv(stateFile),
     env: kv(envFile),
     sent: existsSync(sent) ? readFileSync(sent, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : [],
+    waits: existsSync(waits) ? readFileSync(waits, 'utf8').trim().split('\n').map(Number) : [],
   };
 }
 const main = (answers, env) => step(MAIN, { answers, env });
@@ -170,6 +183,119 @@ test('Airlock unreachable, an answer that isn\'t JSON, or no OIDC for the job: n
   assert.equal(noOidc.code, 1);
   assert.deepEqual(noOidc.sent, []);
   assert.match(noOidc.stdout, /add permissions: id-token: write/);
+});
+
+// ---------- Trying again when API Gateway, not Airlock, answered (lunareng/airlock-actions#52) ----------
+
+const GATEWAY_500 = { status: 500, body: { message: 'Internal Server Error' } };
+const retries = (r, path = '/v1/mint') => r.stdout.split('\n').filter((l) => l.startsWith(`::warning::Airlock: ${path} attempt `));
+
+test('retry: two API Gateway 500s, then a grant: the run gets its token, and the log has two retry lines', () => {
+  const r = main({ mint: [GATEWAY_500, GATEWAY_500, granted] });
+  assert.equal(r.code, 0, r.stdout);
+  assert.equal(r.output.token, TOKEN);
+  assert.equal(r.state.token, TOKEN);
+  assert.deepEqual(retries(r).map((l) => l.replace(/in \d+ s$/, 'in N s')), [
+    '::warning::Airlock: /v1/mint attempt 1 of 6 got HTTP 500 from in front of Airlock; trying again in N s',
+    '::warning::Airlock: /v1/mint attempt 2 of 6 got HTTP 500 from in front of Airlock; trying again in N s',
+  ]);
+  // Three calls, each proven by its own OIDC token: Airlock takes each one once.
+  const mints = to(r, '/v1/mint');
+  assert.equal(mints.length, 3);
+  assert.equal(new Set(mints.map((m) => m.headers.authorization)).size, 3);
+  assert.deepEqual(mints.map((m) => m.body), [{ role: 'triage' }, { role: 'triage' }, { role: 'triage' }]);
+  // 2 s, then 5 s, each with up to a fifth more.
+  assert.equal(r.waits.length, 2);
+  assert.ok(r.waits[0] >= 2000 && r.waits[0] <= 2400, String(r.waits));
+  assert.ok(r.waits[1] >= 5000 && r.waits[1] <= 6000, String(r.waits));
+});
+
+test('retry: a 403 refusal is one call, no retry', () => {
+  const r = main({ mint: [{ status: 403, body: { decision: 'refused', reason: 'not_on_main', message: 'Airlock: not on main', run: '9.1' } }, granted] });
+  assert.equal(r.code, 1);
+  assert.equal(to(r, '/v1/mint').length, 1);
+  assert.deepEqual(retries(r), []);
+  assert.deepEqual(r.waits, []);
+  assert.match(r.stdout, /::error::Airlock refused: not_on_main: Airlock: not on main/);
+});
+
+test('retry: six API Gateway 500s: six calls, five retry lines, and the run stops with today\'s message', () => {
+  const r = main({ mint: GATEWAY_500 });
+  assert.equal(r.code, 1);
+  assert.equal(to(r, '/v1/mint').length, 6);
+  assert.equal(retries(r).length, 5);
+  assert.equal(r.waits.length, 5);
+  assert.deepEqual(r.output, {});
+  assert.deepEqual(r.state, {});
+  assert.match(r.stdout, /^::error::Airlock: no token \(HTTP 500\); the run stops here$/m);
+});
+
+test('retry: anything Airlock said is final, whatever its status: its refusals and its own timeout are one call', () => {
+  for (const mint of [
+    { status: 503, body: { error: 'timeout', message: 'The request took too long. Nothing was changed.' } },
+    { status: 503, body: { decision: 'refused', reason: 'github_unreachable', message: 'Airlock: Airlock could not reach GitHub' } },
+    { status: 500, body: { decision: 'refused', reason: 'internal', message: 'm' } },
+    { status: 502, body: { decision: 'refused', reason: 'github_error', message: 'm' } },
+    { status: 504, body: { error: 'timeout', message: 'm' } },
+    { status: 501, body: { message: 'Not Implemented' } },
+    { status: 429, body: { message: 'Too Many Requests' } },
+    { status: 404, body: { message: 'Not Found' } },
+    { status: 401, body: { message: 'Unauthorized' } },
+    { status: 200, body: { mode: 'live', decision: 'granted' } },
+  ]) {
+    const r = main({ mint: [mint, granted] });
+    assert.equal(r.code, 1, JSON.stringify(mint));
+    assert.equal(to(r, '/v1/mint').length, 1, JSON.stringify(mint));
+    assert.deepEqual(retries(r), [], JSON.stringify(mint));
+    assert.deepEqual(r.state, {}, JSON.stringify(mint));
+  }
+});
+
+test('retry: no answer, or a 502, 503 or 504 that isn\'t Airlock\'s, is tried again', () => {
+  for (const [first, got] of [
+    ['down', 'no answer (TypeError)'],
+    [{ status: 502, body: 'Bad Gateway' }, 'HTTP 502 from in front of Airlock'],
+    [{ status: 503, body: { message: 'Service Unavailable' } }, 'HTTP 503 from in front of Airlock'],
+    [{ status: 504, body: { message: 'Endpoint request timed out' } }, 'HTTP 504 from in front of Airlock'],
+  ]) {
+    const r = main({ mint: [first, granted] });
+    assert.equal(r.code, 0, r.stdout);
+    assert.equal(r.output.token, TOKEN);
+    assert.equal(to(r, '/v1/mint').length, 2);
+    assert.deepEqual(retries(r).map((l) => l.replace(/in \d+ s$/, '')), [`::warning::Airlock: /v1/mint attempt 1 of 6 got ${got}; trying again `]);
+  }
+  const down = main({ mint: 'down' });
+  assert.equal(down.code, 1);
+  assert.equal(to(down, '/v1/mint').length, 6);
+  assert.match(down.stdout, /^::error::Airlock: unreachable \(TypeError\); no token$/m);
+});
+
+test('retry: the schedule is 2, 5, 10, 20 and 40 s with up to a fifth more, and stops where the 110 s would run out', async () => {
+  const { WAITS, BUDGET_MS, retryWait, notAirlocks } = await import('../src/airlock.mjs');
+  assert.deepEqual(WAITS, [2000, 5000, 10000, 20000, 40000]);
+  // Inside the role workflow's 2-minute step limit, with room to report.
+  assert.ok(BUDGET_MS <= 110000);
+  for (const random of [() => 0, () => 0.5, () => 0.999999]) {
+    let elapsed = 0;
+    const waits = [];
+    for (let n = 0; n < 5; n++) {
+      const w = retryWait(n, elapsed, random);
+      assert.ok(w >= WAITS[n] && w <= WAITS[n] * 1.2, `${n}: ${w}`);
+      waits.push(w);
+      elapsed += w + 500;
+    }
+    assert.equal(retryWait(5, elapsed, random), null);
+  }
+  // Slow attempts use the time up: no wait starts an attempt with under 5 s left.
+  assert.equal(retryWait(4, 65001, () => 0), null);
+  assert.equal(retryWait(4, 65000, () => 0), 40000);
+  assert.equal(retryWait(0, 104000, () => 0), null);
+  // Only an answer that can't be Airlock's.
+  assert.equal(notAirlocks({ status: 500, out: { message: 'Internal Server Error' } }), true);
+  assert.equal(notAirlocks({ status: 502, out: {} }), true);
+  assert.equal(notAirlocks({ status: 503, out: { error: 'timeout' } }), false);
+  assert.equal(notAirlocks({ status: 500, out: { decision: 'refused' } }), false);
+  assert.equal(notAirlocks({ status: 400, out: {} }), false);
 });
 
 test('outside a job step (no GITHUB_OUTPUT or GITHUB_STATE), or with no role, nothing is asked for', () => {
@@ -388,17 +514,33 @@ test('post: a refusal that quotes the token has it cut out of the log', () => {
 });
 
 test('post: a 404, a 5xx or an unreachable Airlock never fails the job; the token expires within the hour', () => {
+  // Airlock's own answers: one call, one line.
   for (const revoke of [
     { status: 404, body: 'Not Found' },
     { status: 503, body: { decision: 'refused', reason: 'github_unreachable', message: 'Airlock: Airlock could not reach GitHub' } },
     { status: 500, body: { decision: 'refused', reason: 'internal', message: 'm' } },
-    { status: 502, body: 'Bad Gateway' },
-    'down',
+    { status: 503, body: { error: 'timeout', message: 'm' } },
   ]) {
     const r = post({ revoke });
     clean(r);
+    assert.equal(to(r, '/v1/revoke').length, 1);
     assert.match(r.stdout, /^::warning::.*the token expires within the hour\n$/);
   }
+  // None that can be Airlock's (lunareng/airlock-actions#52): six calls, five retry lines, then the same warning.
+  for (const revoke of [{ status: 502, body: 'Bad Gateway' }, 'down']) {
+    const r = post({ revoke });
+    clean(r);
+    assert.equal(to(r, '/v1/revoke').length, 6);
+    assert.match(r.stdout, /^(::warning::Airlock: \/v1\/revoke attempt [1-5] of 6 got .+; trying again in \d+ s\n){5}::warning::.*the token expires within the hour\n$/);
+  }
+});
+
+test('post: an API Gateway 500, then Airlock: the token is handed back, after one retry line', () => {
+  const r = post({ revoke: [GATEWAY_500, { status: 200, body: { revoked: true, run: '7.3' } }] });
+  clean(r);
+  assert.equal(to(r, '/v1/revoke').length, 2);
+  assert.equal(retries(r, '/v1/revoke').length, 1);
+  assert.match(r.stdout, /Airlock: token handed back, run 7\.3\n$/);
 });
 
 test('post: no OIDC for the job, or no token to hand back (shadow, a refusal), still passes and posts nothing', () => {
