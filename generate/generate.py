@@ -270,6 +270,14 @@ on:
         description: "set by the clock: a scheduled run, subject to AGENTS_ENABLED"
         type: boolean
         default: false
+      provider:
+        description: "claude or codex; blank uses the fleet setting, then role policy"
+        type: string
+        default: ""
+      auth:
+        description: "subscription or api-key; blank uses the fleet setting, then subscription"
+        type: string
+        default: ""
       reason:
         description: "why it was started, for the run's record (the clock and router set it)"
         type: string
@@ -286,11 +294,15 @@ jobs:
     uses: {ROLE_WORKFLOW}@{s.ref}{note}
     with:
       role: {r}
+      provider: ${{{{ inputs.provider }}}}
+      auth: ${{{{ inputs.auth }}}}
       signal: ${{{{ inputs.signal }}}}
       reason: ${{{{ inputs.reason }}}}
       clock: ${{{{ inputs.clock }}}}{extra}
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{{{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}}}
+      ANTHROPIC_API_KEY: ${{{{ secrets.ANTHROPIC_API_KEY }}}}
+      OPENAI_API_KEY: ${{{{ secrets.OPENAI_API_KEY }}}}
 """
 
 
