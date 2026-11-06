@@ -22,10 +22,12 @@ test('legacy defaults, fleet override, per-run override, clear-to-default and mo
   for (const env of [{ INPUT_PROVIDER:'other' }, { INPUT_AUTH:'auto' }, { INPUT_PROVIDER:'codex' }, { AIRLOCK_CLAUDE_MODEL:'gpt-example' }, { AIRLOCK_CLAUDE_MODEL:'claude\nINJECT=1' }]) assert.throws(() => selectAgent(run, env));
 });
 test('inactive model credentials and GitHub OIDC never reach the provider process', () => {
-  const env = { PATH:'/bin', GH_TOKEN:'scoped-github', ACTIONS_ID_TOKEN_REQUEST_TOKEN:'job-proof', CLAUDE_CODE_OAUTH_TOKEN:'claude-login', ANTHROPIC_API_KEY:'anthropic-key', OPENAI_API_KEY:'openai-key', CODEX_HOME:'/old' };
+  const env = { PATH:'/bin', GH_TOKEN:'scoped-github', ACTIONS_ID_TOKEN_REQUEST_TOKEN:'job-proof', CLAUDE_CODE_OAUTH_TOKEN:'claude-login', ANTHROPIC_API_KEY:'anthropic-key', OPENAI_API_KEY:'openai-key', CODEX_HOME:'/old', CLAUDE_CODE_ENABLE_TELEMETRY:'1', OTEL_EXPORTER_OTLP_ENDPOINT:'https://airlock.example/v1/otlp' };
   for (const provider of ['claude','codex']) for (const mode of ['subscription','api-key']) {
     const e = agentEnvironment({ ...plan, provider, auth:mode }, env, '/private-home');
     assert.equal(e.GH_TOKEN, 'scoped-github'); assert.equal(e.ACTIONS_ID_TOKEN_REQUEST_TOKEN, undefined);
+    assert.equal(e.CLAUDE_CODE_ENABLE_TELEMETRY, provider === 'claude' ? '1' : undefined);
+    assert.equal(e.OTEL_EXPORTER_OTLP_ENDPOINT, env.OTEL_EXPORTER_OTLP_ENDPOINT);
     const keys = Object.keys(e).filter(k => /TOKEN|API_KEY/.test(k));
     assert.deepEqual(keys.sort(), ['GH_TOKEN', ...(provider === 'claude' ? [mode === 'subscription' ? 'CLAUDE_CODE_OAUTH_TOKEN' : 'ANTHROPIC_API_KEY'] : mode === 'api-key' ? ['CODEX_API_KEY'] : [])].sort());
   }

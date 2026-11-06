@@ -57,6 +57,7 @@ export function agentEnvironment(plan, env, home) {
     const key = plan.auth === 'subscription' ? 'CLAUDE_CODE_OAUTH_TOKEN' : 'ANTHROPIC_API_KEY';
     if (!env[key]) throw new Error(`selected auth requires ${key}`);
     next[key] = env[key]; next.CLAUDE_CONFIG_DIR = home;
+    if (env.CLAUDE_CODE_ENABLE_TELEMETRY !== undefined) next.CLAUDE_CODE_ENABLE_TELEMETRY = env.CLAUDE_CODE_ENABLE_TELEMETRY;
   } else {
     next.CODEX_HOME = home;
     if (plan.auth === 'api-key') {
