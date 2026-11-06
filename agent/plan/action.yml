@@ -1,0 +1,54 @@
+name: Compile a role runner plan
+description: Read policy and explicit provider/auth selection without model credentials.
+inputs:
+  role:
+    required: true
+    description: Role name.
+  signal:
+    description: Issue or pull request URL in this organization.
+  provider:
+    description: Explicit provider override; blank uses policy then Claude.
+  auth:
+    description: Explicit subscription or api-key mode; blank defaults to subscription.
+  claude-model:
+    description: Claude model override.
+  codex-model:
+    description: Codex model override.
+outputs:
+  provider:
+    value: ${{ steps.plan.outputs.provider }}
+    description: Selected CLI.
+  auth:
+    value: ${{ steps.plan.outputs.auth }}
+    description: Selected authentication mode.
+  model:
+    value: ${{ steps.plan.outputs.model }}
+    description: Model for the selected CLI.
+  max_turns:
+    value: ${{ steps.plan.outputs.max_turns }}
+    description: Claude turns or conservative Codex tool-call cap.
+  allowed:
+    value: ${{ steps.plan.outputs.allowed }}
+    description: Claude tools allowlist.
+  connectors:
+    value: ${{ steps.plan.outputs.connectors }}
+    description: MCP connector names.
+runs:
+  using: composite
+  steps:
+    - name: YAML reader
+      shell: bash
+      run: pip install --quiet pyyaml==6.0.3
+    - id: plan
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        ROLE: ${{ inputs.role }}
+        OWNER: ${{ github.repository_owner }}
+        POLICY_REPO: ${{ github.repository }}
+        SIGNAL: ${{ inputs.signal }}
+        INPUT_PROVIDER: ${{ inputs.provider }}
+        INPUT_AUTH: ${{ inputs.auth }}
+        AIRLOCK_CLAUDE_MODEL: ${{ inputs.claude-model }}
+        AIRLOCK_CODEX_MODEL: ${{ inputs.codex-model }}
+      run: python -I "$ACTION_PATH/../plan.py"
