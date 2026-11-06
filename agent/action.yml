@@ -1,0 +1,40 @@
+name: Run a scoped role with Claude Code or Codex
+description: Explicit provider/auth selection, isolated credentials and subscription refresh write-back.
+inputs:
+  plan-path:
+    description: Path to the JSON plan produced from the role policy by role.yml.
+    required: true
+  provider:
+    description: claude or codex
+    required: true
+  cli-version:
+    description: Pinned provider CLI version (X.Y.Z).
+    required: true
+  claude-code-oauth-token:
+    description: Claude subscription login, required only for claude/subscription.
+  anthropic-api-key:
+    description: API credential, required only for claude/api-key.
+  openai-api-key:
+    description: API credential, required only for codex/api-key.
+  runner-auth-url:
+    description: Secure credential broker origin, required only for codex/subscription.
+runs:
+  using: composite
+  steps:
+    - name: Install the selected CLI without model credentials
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        PROVIDER: ${{ inputs.provider }}
+        CLI_VERSION: ${{ inputs.cli-version }}
+      run: node "$ACTION_PATH/install.mjs"
+    - name: Run with only the selected provider credential
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        PLAN_PATH: ${{ inputs.plan-path }}
+        CLAUDE_CODE_OAUTH_TOKEN: ${{ inputs.claude-code-oauth-token }}
+        ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
+        OPENAI_API_KEY: ${{ inputs.openai-api-key }}
+        RUNNER_AUTH_URL: ${{ inputs.runner-auth-url }}
+      run: node "$ACTION_PATH/run.mjs"
