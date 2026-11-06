@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 WF = yaml.safe_load((ROOT / ".github" / "workflows" / "role.yml").read_text())
 RUN = {s.get("name"): s for s in WF["jobs"]["run"]["steps"]}
 PLAN_MINUTES = WF["jobs"]["plan"]["steps"][1]["run"]
-PLAN = RUN["the role's file"]["run"].split("\n", 1)[1]  # without its pip install: the test's python has pyyaml
+PLAN = f'python -I "{ROOT}/agent/plan.py"' #  # without its pip install: the test's python has pyyaml
 SESSIONS = RUN["the MCP sessions, for Claude Code's env"]["run"]
 # The steps call `python` and `python3`: this interpreter's own directory first, where both are and whose pyyaml -I
 # can see (setup-python's, or a venv's).
@@ -113,4 +113,18 @@ assert WF["jobs"]["run"]["needs"] == "plan"
 assert WF["permissions"] == {"contents": "read", "id-token": "write"}
 print("ok  every action pinned, no expression in a script, read-only contents")
 
+# Provider switch compiles before any credentials are requested. Non-URL routine signals remain
+# recorded by Mint, but are not interpolated into the model prompt.
+codex_role = ROLE.replace("model: claude-sonnet-5-5", "model: gpt-example").replace("  tools: [WebFetch]\n", "")
+r, o, tmp = step(PLAN, policy({"roles/triage/role.yaml": codex_role}), ROLE="triage", OWNER="acme", POLICY_REPO="acme/policy", INPUT_PROVIDER="codex", INPUT_AUTH="api-key", SIGNAL="routine:weekly")
+assert r.returncode == 0, r.stdout + r.stderr
+assert o["provider"] == "codex" and o["auth"] == "api-key"
+plan = json.loads(Path(tmp, "plan.json").read_text())
+assert plan["writeGitDirs"] == ["repos/api/.git"]
+assert "routine:weekly" not in plan["prompt"]
+r, o, tmp = step(PLAN, repo, ROLE="triage", OWNER="acme", POLICY_REPO="acme/policy", SIGNAL="https://github.com/acme/api/issues/7")
+assert r.returncode == 0 and "Lead with this signal: https://github.com/acme/api/issues/7" in Path(tmp,"prompt.txt").read_text()
+r, o, tmp = step(PLAN, repo, ROLE="triage", OWNER="acme", POLICY_REPO="acme/policy", INPUT_PROVIDER="codex", AIRLOCK_CODEX_MODEL="gpt-example")
+assert r.returncode != 0 and "not yet supported" in r.stderr
+print("ok  provider/auth plans, Git write roots, validated signal URLs, and unsupported Codex tools")
 print("OK: 0 failing case(s)")

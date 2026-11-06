@@ -6,7 +6,7 @@ mode after changing `config.yaml`, `repos/` or `roles/`, and commits what it wri
 
 | File | From | What it is |
 | --- | --- | --- |
-| `.github/workflows/role-<role>.yml` | each agent role with a `run` | The role's triggers (`workflow_dispatch` with `signal`, `clock` and `reason`) and a call to this repository's `.github/workflows/role.yml`, pinned to `airlock_actions.ref`. No `schedule:` trigger: the clock is the only timer. |
+| `.github/workflows/role-<role>.yml` | each agent role with a `run` | The role's triggers (`workflow_dispatch` with `signal`, `clock`, `reason`, `provider` and `auth`) and a call to this repository's `.github/workflows/role.yml`, pinned to `airlock_actions.ref`. No `schedule:` trigger: the clock is the only timer. |
 | `generated/codeowners/<repo>.CODEOWNERS` | `repos/<repo>.yaml` | Commit as that repository's `.github/CODEOWNERS`. An L1/L2 default owns everything; an L1/L2 path stricter than the default gets its own line; `/AUTONOMY.yaml` is always owned. |
 | `generated/branch-protection/<repo>.json` | `repos/<repo>.yaml`, `config.yaml` | The body for `PUT /repos/<org>/<repo>/branches/main/protection` ([adopt](../adopt/README.md)'s `protect` sends it). |
 | `generated/roles/<role>/github-app.json` | `roles/<role>/role.yaml` | The permissions of a role's own GitHub App, from its `writes`; only for a role not on Airlock (`identity.key_store` other than `airlock`). Roles sharing a `github_login` share one App. |
@@ -85,3 +85,5 @@ role_runs:
 `python3 test/generate/test_generate.py` runs it on an invented acme policy repo, `test/generate/fixtures/policy`,
 which carries the generated files committed as a tenant would. With `REPRODUCE=<policy checkout>` and
 `REPRODUCE_REPO=<owner/name>` it also checks that checkout's committed files byte for byte.
+
+Provider/auth inputs are optional. Empty inputs follow the caller repository's fleet setting and then the role workflow's defaults. Generated callers pass the three optional model credentials; only the selected provider/auth pair is required. See [the agent launcher](../agent/README.md) for subscription persistence and current Codex capability limits.

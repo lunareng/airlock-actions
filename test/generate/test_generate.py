@@ -131,10 +131,10 @@ def _():
     w = yaml.safe_load((FIXTURE / ".github/workflows/role-triage.yml").read_text())
     job = w["jobs"]["run"]
     assert job["uses"] == "lunareng/airlock-actions/.github/workflows/role.yml@0123456789abcdef0123456789abcdef01234567", job
-    assert job["with"] == {"role": "triage", "signal": "${{ inputs.signal }}", "reason": "${{ inputs.reason }}", "clock": "${{ inputs.clock }}", "runner": "acme-agents", "git-email-domain": "acme.example"}
+    assert job["with"] == {"role": "triage", "provider": "${{ inputs.provider }}", "auth": "${{ inputs.auth }}", "signal": "${{ inputs.signal }}", "reason": "${{ inputs.reason }}", "clock": "${{ inputs.clock }}", "runner": "acme-agents", "git-email-domain": "acme.example"}
     assert w[True]["workflow_dispatch"]["inputs"]["reason"] == {"description": "why it was started, for the run's record (the clock and router set it)", "type": "string", "default": ""}
     assert w["permissions"] == {"contents": "read", "id-token": "write"}
-    assert job["secrets"] == {"CLAUDE_CODE_OAUTH_TOKEN": "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}"}
+    assert job["secrets"] == {"CLAUDE_CODE_OAUTH_TOKEN": "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}", "ANTHROPIC_API_KEY": "${{ secrets.ANTHROPIC_API_KEY }}", "OPENAI_API_KEY": "${{ secrets.OPENAI_API_KEY }}"}
     assert "schedule" not in w[True], "the clock is the only timer: no workflow has a schedule trigger"
 
 
@@ -145,7 +145,7 @@ def _():
     set_config(d, lambda c: c.pop("role_runs"))
     gen(d, "--write")
     w = yaml.safe_load((d / ".github/workflows/role-triage.yml").read_text())
-    assert w["jobs"]["run"]["with"] == {"role": "triage", "signal": "${{ inputs.signal }}", "reason": "${{ inputs.reason }}", "clock": "${{ inputs.clock }}"}, w["jobs"]["run"]
+    assert w["jobs"]["run"]["with"] == {"role": "triage", "provider": "${{ inputs.provider }}", "auth": "${{ inputs.auth }}", "signal": "${{ inputs.signal }}", "reason": "${{ inputs.reason }}", "clock": "${{ inputs.clock }}"}, w["jobs"]["run"]
 
 
 @case("schedules.json: every agent role's run.schedule and every clock entry, clock=true, sorted by workflow")
