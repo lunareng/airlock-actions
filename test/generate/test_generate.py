@@ -243,10 +243,12 @@ def _():
     (d / "roles/helper/role.yaml").write_text((d / "roles/helper/role.yaml").read_text().replace("role: helper", "role: other"))
     r = gen(d, "--check")
     assert r.returncode == 1 and "roles/helper/role.yaml" in r.stdout, r.stdout
-    d = copy()
-    (d / "roles/triage/role.yaml").write_text((d / "roles/triage/role.yaml").read_text().replace('  schedule: "15 9 * * 1-5"\n', ""))
-    r = gen(d, "--check")
-    assert r.returncode == 1 and "run.schedule" in r.stdout, r.stdout
+    for invalid in ['""', 'null', 'false', '[]', '"   "']:
+        d = copy()
+        p = d / "roles/triage/role.yaml"
+        p.write_text(p.read_text().replace('"15 9 * * 1-5"', invalid))
+        r = gen(d, "--write")
+        assert r.returncode == 1 and "run.schedule" in r.stdout, (invalid, r.stdout)
     d = copy()
     (d / "repos/api.yaml").write_text((d / "repos/api.yaml").read_text().replace("why: Billing moves money.", 'why: "Billing.\\n* @attacker"'))
     r = gen(d, "--check")
@@ -314,6 +316,28 @@ def _():
     run = steps[-1]
     assert "${{" not in run["run"], "no expression inside a run: script"
     assert run["env"]["MODE"] == "${{ inputs.mode }}" and "python -I" in run["run"]
+
+
+@case("an omitted schedule produces a dispatchable caller without inventing a timer; explicit clocks remain")
+def _():
+    d = copy()
+    p = d / "roles/triage/role.yaml"
+    p.write_text(p.read_text().replace('  schedule: "15 9 * * 1-5"\n', ""))
+    r = gen(d, "--write")
+    assert r.returncode == 0, r.stdout + r.stderr
+    workflow = (d / ".github/workflows/role-triage.yml").read_text()
+    assert "no timer of its own" in workflow
+    assert "workflow_dispatch:" in workflow and "schedule:" not in workflow
+    entries = json.loads((d / "generated/schedules.json").read_text())["schedules"]
+    explicit = [e for e in entries if e["workflow"] == "role-triage.yml"]
+    assert len(explicit) == 1 and explicit[0]["inputs"]["reason"] == "routine:weekly", explicit
+    set_config(d, lambda c: c.update(clock=[e for e in c["clock"] if e["workflow"] != "role-triage.yml"]))
+    r = gen(d, "--write")
+    assert r.returncode == 0, r.stdout + r.stderr
+    entries = json.loads((d / "generated/schedules.json").read_text())["schedules"]
+    assert not any(e["workflow"] == "role-triage.yml" for e in entries), entries
+    assert "workflow_dispatch:" in (d / ".github/workflows/role-triage.yml").read_text()
+    assert gen(d, "--check").returncode == 0
 
 
 if os.environ.get("REPRODUCE"):
