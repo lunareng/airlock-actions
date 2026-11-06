@@ -41,7 +41,7 @@ for(const scenario of ['deny','git','guard']) test(`actual Codex CLI ${scenario=
   let status;try{status=await new Promise((ok,bad)=>{child.on('error',bad);child.on('close',ok);});}finally{clearTimeout(timer);}
   assert.equal(status,0,stderr);assert.equal(requests,2);
   if(permitted){const log=spawnSync('git',['log','--oneline'],{cwd:join(cwd,'repos/app'),encoding:'utf8'});assert.match(log.stdout,/offline-smoke/);}
-  else if(scenario==='guard'){assert.match(toolOutput,/PermissionError|Operation not permitted|Permission denied/);assert.equal(JSON.parse(await readFile(join(home,'guard-policy.json'),'utf8')).maxTools,10);}
+  else if(scenario==='guard'){assert.match(toolOutput,/Process exited with code 1/);assert.match(toolOutput,/PermissionError|Operation not permitted|Permission denied|Read-only file system/);assert.equal(JSON.parse(await readFile(join(home,'guard-policy.json'),'utf8')).maxTools,10);}
   else{assert.match(toolOutput,/blocked by PreToolUse hook/);await assert.rejects(access(join(cwd,'forbidden-file')));}
   assert.ok(Number(await readFile(join(home,'guard-count'),'utf8'))>=1,'the real CLI ran the hook');
  }finally{child?.kill('SIGKILL');server.closeAllConnections();await new Promise(ok=>server.close(ok));await rm(base,{recursive:true,force:true});}
