@@ -108,32 +108,37 @@ class Refusals(unittest.TestCase):
         p['body']='## Signal\nhttps://github.com/acme/tools/issues/7\n'
         get=lambda *_:{'state':'open','labels':[{'name':'tool-request'}]}
         self.assertIsNotNone(m.signal_problem(p,get))
+        p['user']['login']='worker-service'
+        self.assertIsNotNone(m.signal_problem(p,get,binding=True))
+        p['user']['login']='acme-worker[bot]'
         p['body']+='\nPart of acme/tools#7\n'
         self.assertIsNone(m.signal_problem(p,get))
         p['body']=p['body'].replace('Part of acme/tools#7','Part of acme/tools#70')
         self.assertIsNotNone(m.signal_problem(p,get))
 
 class FakeGitHub:
-    moved=False;body_changed=False;missing_rules=False;approved_value=False;protected_value=False;result='pass';author='acme-worker[bot]'
+    moved=False;body_changed=False;missing_rules=False;approved_value=False;protected_value=False;markdown=False;reads=0;agent_pattern='acme-*[bot]';result='pass';author='acme-worker[bot]'
     def __init__(self,repo):self.pulls=0
     def pull(self,pr):
-        self.pulls+=1
+        self.pulls+=1;FakeGitHub.reads+=1
         return {'state':'open','head':{'sha':OLD if self.moved and self.pulls>=3 else SHA},'changed_files':1,'base':{'sha':'c'*40},
                 'user':{'login':self.author},'body':'Changed intent' if self.body_changed and self.pulls>=3 else '## Signal\nThe owner requested this test.'}
-    def files(self,*_):return ['.github/workflows/test.yml'] if self.protected_value else ['src/main.py']
+    def files(self,*_):return ['.github/workflows/test.yml'] if self.protected_value else (['README.md'] if self.markdown else ['src/main.py'])
     def approved(self,*_):return self.approved_value
-    def comments(self,*_):return [summary(any=self.result=='findings'),receipt()]
+    def comments(self,*_):
+        FakeGitHub.reads+=1
+        return [] if self.result=='pending' else [summary(any=self.result=='findings'),receipt()]
     def review_rules(self,sha):
         if self.missing_rules:raise m.Refused('base rules missing')
     def intent_time(self,*_):return m.stamp(NOW)
     def call(self,*_):raise AssertionError('Observer must never make unexpected writes')
 
 class Lifecycle(unittest.TestCase):
-    def run_main(self,**kwargs):
+    def run_main(self,wait="0",**kwargs):
         attrs={k:getattr(FakeGitHub,k) for k in kwargs}
         try:
             for k,v in kwargs.items():setattr(FakeGitHub,k,v)
-            with patch.object(m,'GitHub',FakeGitHub),patch.dict(os.environ,{'REPO':'acme/project','PR':'7','SHA':SHA,'KIND':'code','WAIT':'0','AGENTS':'acme-*[bot]'},clear=True):return m.main()
+            with patch.object(m,'GitHub',FakeGitHub),patch.dict(os.environ,{'REPO':'acme/project','PR':'7','SHA':SHA,'KIND':'code','WAIT':wait,'AGENTS':FakeGitHub.agent_pattern},clear=True):return m.main()
         finally:
             for k,v in attrs.items():setattr(FakeGitHub,k,v)
     def test_a_last_moment_push_cannot_get_a_passing_old_head_verdict(self):
@@ -146,6 +151,17 @@ class Lifecycle(unittest.TestCase):
         with self.assertRaises(m.Refused):self.run_main(result='findings')
         self.assertEqual(0,self.run_main(result='findings',author='someone'))
         self.assertEqual(0,self.run_main(result='findings',approved_value=True))
+    def test_configured_service_accounts_do_not_take_human_shortcuts(self):
+        with self.assertRaisesRegex(m.Refused,'human approval'):
+            self.run_main(author='worker-service',agent_pattern='worker-*',protected_value=True)
+        with self.assertRaisesRegex(m.Refused,'base rules'):
+            self.run_main(author='worker-service',agent_pattern='worker-*',markdown=True,missing_rules=True)
+    def test_fifteen_minute_wait_has_a_bounded_api_read_budget(self):
+        clock=[0.0];FakeGitHub.reads=0
+        def sleep(seconds):clock[0]+=seconds
+        with patch.object(m.time,'monotonic',lambda:clock[0]),patch.object(m.time,'sleep',sleep):
+            with self.assertRaises(m.Refused):self.run_main(wait='900',result='pending')
+        self.assertLess(FakeGitHub.reads,80)
     def test_workflow_and_review_rule_changes_need_current_head_human_approval(self):
         with self.assertRaisesRegex(m.Refused,'human approval'):self.run_main(protected_value=True)
         self.assertEqual(0,self.run_main(protected_value=True,approved_value=True))
