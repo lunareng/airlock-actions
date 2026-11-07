@@ -72,8 +72,8 @@ checks the app's code and security receipts. It cannot override the human-review
 
 Opting into the rubric also installs `codex-review-results.yml`. It handles OpenAI app summary/receipt creation,
 edits and deletion on the default branch, with no PR checkout. The pinned `review/codex-rerun` action validates
-immutable app identity, repository and current head, then reruns completed `claude-review` / `claude-security-review`
-rows from the exact adopted workflow. A replacement summary with an old or null head also invalidates the current rows, matching the observer’s refusal rules. Busy rows already poll the state. The handler never writes a passing
+immutable app identity, repository and current head, then waits for the complete adopted workflow and reruns it once, refreshing both `claude-review` and
+`claude-security-review` plus their dependent row reconciliation. A replacement summary with an old or null head also invalidates the current rows, matching the observer’s refusal rules. Busy workflows are waited out, including dependent jobs. The handler never writes a passing
 status itself. Its Actions-write token is isolated from model/review jobs, and it never follows an old head.
 
 ## Authentic edits and intent
@@ -88,6 +88,6 @@ A body edited during a review cannot borrow that review’s later completion. Af
 or request a new app review; a completed review alone is not evidence that the new intent was read. The observer
 rechecks intent and evidence before returning. A body changed and restored still has a newer edit timestamp.
 
-The result updater retains events while review jobs are busy, waits for completion, then refreshes their rows.
+The result updater retains events while review jobs are busy, waits for the whole workflow and dependent jobs to finish, then refreshes both reviews with one workflow rerun.
 It does not assume a busy job will fetch the update. Invalidation is conservative for every OpenAI-bot comment
 edit/deletion, even if a receipt header was removed. This only schedules a fresh check; it cannot produce PASS.
