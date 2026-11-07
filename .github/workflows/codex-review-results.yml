@@ -14,8 +14,8 @@ concurrency:
   cancel-in-progress: true
 jobs:
   refresh:
-    if: ${{ github.event.issue.pull_request && github.event.comment.user.id == 199175422 && github.event.comment.performed_via_github_app.id == 1144995 && (vars.AIRLOCK_REVIEW_PROVIDER || vars.AIRLOCK_AGENT_PROVIDER || 'claude') == 'codex' }}
+    if: ${{ github.event.issue.pull_request && github.event.comment.user.id == 199175422 && (vars.AIRLOCK_REVIEW_PROVIDER || vars.AIRLOCK_AGENT_PROVIDER || 'claude') == 'codex' }}
     runs-on: ubuntu-latest # public repo: hosted, no self-hosted credentials
-    timeout-minutes: 5
+    timeout-minutes: 25
     steps:
-      - uses: lunareng/airlock-actions/review/codex-rerun@17101c91ce2225e90be57bb875ffbbe20348c936 # app-bridge source, PR #58
+      - uses: lunareng/airlock-actions/review/codex-rerun@c89be0f72c65a2399befd89937ae69ca02415e00 # app-bridge source, PR #58
