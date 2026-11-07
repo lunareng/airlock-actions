@@ -21,11 +21,11 @@ def comment(body, actions=False, id=1, created=NOW, updated=None):
             'user':{'id':41898282 if actions else 199175422,'login':'github-actions[bot]' if actions else 'chatgpt-codex-connector[bot]','type':'Bot'},
             'performed_via_github_app':{'id':15368 if actions else 1144995}}
 
-def summary(sha=SHA, status='completed', any=False, unresolved=False, kind='code', updated=LATER, id=2):
+def summary(sha=SHA, status='completed', any=False, unresolved=False, kind='code', updated=LATER, id=2, code_time=LATER):
     data={'code_review':{'commit_sha':None,'status':None,'has_any_findings':None,'has_unresolved_findings':None},
           'security_review':{'commit_sha':None,'status':None,'has_any_findings':None,'has_unresolved_findings':None}}
     data[kind+'_review']={'commit_sha':sha,'status':status,'has_any_findings':any,'has_unresolved_findings':unresolved}
-    return comment(m.SUMMARY+'\n<!-- codex-review-state:v1 '+json.dumps(data)+' -->\n\nCodex Review Summary',updated=updated,id=id)
+    return comment(m.SUMMARY+'\n<!-- codex-review-state:v1 '+json.dumps(data)+' -->\n\nCodex Review Summary\n| 📝 **Code Review** | ✅ **Completed** <relative-time datetime="'+code_time+'">time</relative-time> | `'+sha[:7]+'` | Manual request |',updated=updated,id=id)
 
 def receipt(sha=SHA[:10], created=LATER):
     return comment('<!-- codex-review-receipt:v1 -->\n\nCodex Review: No major issues.\n\n**Reviewed commit:** `'+sha+'`\n',id=3,created=created)
@@ -69,9 +69,15 @@ class Refusals(unittest.TestCase):
         newer=summary(sha=OLD,updated='2026-01-01T00:02:00Z',id=4)
         self.assertEqual('pending',self.result([summary(),receipt(),newer]))
     def test_old_completed_review_does_not_satisfy_new_rubric_request(self):
-        self.assertEqual('pending',self.result([summary(updated='2025-12-31T23:59:59Z'),receipt()]))
+        self.assertEqual('pending',self.result([summary(updated='2025-12-31T23:59:59Z',code_time='2025-12-31T23:59:59Z'),receipt()]))
         self.assertEqual('pending',self.result([summary(),receipt(created='2025-12-31T23:59:59Z')]))
         self.assertEqual('pending',self.result([summary()]))
+    def test_security_update_and_receipt_cannot_freshen_an_old_code_review(self):
+        old='2025-12-31T23:59:59Z'
+        # Model a later Security Review updating the shared summary and posting a generic receipt.
+        self.assertEqual('pending',self.result([summary(updated=LATER,code_time=old),receipt(created=LATER)]))
+        missing=summary();missing['body']=missing['body'].split('\n|')[0]
+        with self.assertRaises(m.Refused):self.result([missing,receipt()])
     def test_security_never_borrows_code_or_absence_of_findings_as_completion(self):
         self.assertEqual('pending',self.result([summary(),receipt()],kind='security'))
         self.assertEqual('pass',self.result([summary(kind='security')],kind='security'))
@@ -175,10 +181,21 @@ class Updates(unittest.TestCase):
                 return {'total_count':2,'jobs':[{'id':10,'name':'claude-review','status':'in_progress' if self.busy else 'completed'}, {'id':11,'name':'claude-security-review','status':'completed'}]}
         api=API();calls=[]
         event={'comment':summary(),'issue':{'number':7,'pull_request':{'url':'https://api.github.com/repos/acme/project/pulls/7'}}}
-        u.update(api,event,calls.append);self.assertEqual([10],calls)
-        calls.clear();api.busy=True;u.update(api,event,calls.append);self.assertEqual([],calls)
+        u.update(api,event,calls.append);self.assertEqual([10,11],calls)
+        calls.clear();api.busy=True;u.update(api,event,calls.append);self.assertEqual([11],calls);calls.clear()
         api.busy=False;api.moved=True;u.update(api,event,calls.append);self.assertEqual([],calls)
         api.moved=False;api.old_run=True;u.update(api,event,calls.append);self.assertEqual([],calls)
+    def test_old_or_null_replacement_still_invalidates_current_head_rows(self):
+        class API:
+            def pull(self,pr):return {'state':'open','head':{'sha':SHA}}
+            def call(self,path):
+                if path.startswith('actions/workflows/'):
+                    return {'total_count':1,'workflow_runs':[{'id':7,'head_sha':SHA,'event':'pull_request','path':'.github/workflows/claude-review.yml'}]}
+                return {'total_count':2,'jobs':[{'id':10,'name':'claude-review','status':'completed'},{'id':11,'name':'claude-security-review','status':'completed'}]}
+        null_state=summary();null_state['body']=null_state['body'].replace('"commit_sha": '+json.dumps(SHA),'"commit_sha": null',1)
+        for replacement in [summary(sha=OLD),null_state]:
+            calls=[];u.update(API(),{'comment':replacement,'issue':{'number':7,'pull_request':{'url':'example'}}},calls.append)
+            self.assertEqual([10,11],calls)
     def test_security_and_deleted_receipts_invalidate_their_own_rows(self):
         class API:
             def pull(self,pr):return {'state':'open','head':{'sha':SHA}}
@@ -187,7 +204,7 @@ class Updates(unittest.TestCase):
                     return {'total_count':1,'workflow_runs':[{'id':7,'head_sha':SHA,'event':'pull_request','path':'.github/workflows/claude-review.yml'}]}
                 return {'total_count':2,'jobs':[{'id':10,'name':'claude-review','status':'completed'}, {'id':11,'name':'claude-security-review','status':'completed'}]}
         calls=[];event={'action':'deleted','comment':summary(kind='security'),'issue':{'number':7,'pull_request':{'url':'example'}}}
-        u.update(API(),event,calls.append);self.assertEqual([11],calls)
+        u.update(API(),event,calls.append);self.assertEqual([10,11],calls)
         calls.clear();event['comment']=receipt();u.update(API(),event,calls.append);self.assertEqual([10],calls)
         calls.clear();event['comment']['performed_via_github_app']['id']=42
         u.update(API(),event,calls.append);self.assertEqual([],calls)

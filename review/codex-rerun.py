@@ -20,8 +20,9 @@ def update(api, event, rerun):
     pull=api.pull(pr);sha=pull.get('head',{}).get('sha')
     if pull.get('state')!='open' or pull.get('draft') or not b.SHA.fullmatch(sha or ''):return 'no open reviewable PR'
     if body.splitlines()[0]==b.SUMMARY:
-        kinds=[k for k in ['code','security'] if b.summary_of([comment],k,sha)]
-        if not kinds:return 'old head summary ignored'
+        # An old/null replacement removes evidence just as surely as deleting the summary.
+        # Refresh both current-head rows; never rerun the head named by the replacement.
+        kinds=['code','security']
     else:
         if not b.fresh_receipt([comment],sha,0):return 'old head receipt ignored'
         kinds=['code']

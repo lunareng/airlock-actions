@@ -88,6 +88,19 @@ def fresh_receipt(comments, sha, since):
         if len(matches) == 1 and sha.startswith(matches[0]): return True
     return False
 
+def code_completed_at(found, sha):
+    # The summary's updated_at is shared with Security Review. Use the Code Review row's
+    # own service-generated completion time, cross-checked against its full-SHA machine state.
+    rows=[]
+    for line in found['comment']['body'].splitlines():
+        cells=[c.strip() for c in line.split('|')]
+        if len(cells)==6 and cells[1]=='📝 **Code Review**': rows.append(cells)
+    if len(rows)!=1: raise Refused('Code Review completion metadata unavailable')
+    value=re.fullmatch(r'✅ \*\*Completed\*\* <relative-time datetime="([^"]+)">[^<]*</relative-time>',rows[0][2])
+    short=re.fullmatch(r'`([0-9a-f]{7,40})`',rows[0][3])
+    if not value or not short or not sha.startswith(short[1]): raise Refused('Code Review completion metadata invalid')
+    return stamp(value[1])
+
 def decision(comments, kind, sha, intent_since):
     found = summary_of(comments, kind, sha)
     if not found: return 'pending'
@@ -95,7 +108,7 @@ def decision(comments, kind, sha, intent_since):
     if state.get('status') in ('failed', 'cancelled', 'error'): return 'failed'
     if state.get('status') != 'completed': return 'pending'
     if state['has_any_findings'] or state['has_unresolved_findings']: return 'findings'
-    if kind == 'code' and (stamp(found['comment'].get('updated_at')) < intent_since or not fresh_receipt(comments, sha, intent_since)):
+    if kind == 'code' and (code_completed_at(found, sha) < intent_since or not fresh_receipt(comments, sha, intent_since)):
         return 'pending'
     return 'pass'
 
