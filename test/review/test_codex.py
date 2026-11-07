@@ -253,52 +253,69 @@ class Routing(unittest.TestCase):
 spec2=importlib.util.spec_from_file_location('codex_update',ROOT/'review/codex-rerun.py')
 u=importlib.util.module_from_spec(spec2);spec2.loader.exec_module(u)
 
+class UpdateAPI:
+    moved=False;busy=False;dependent_busy=False;old_run=False;wrong_pr=False
+    def pull(self,pr):return {'state':'open','draft':False,'head':{'sha':OLD if self.moved else SHA}}
+    def run(self):
+        return {'id':7,'head_sha':OLD if self.old_run else SHA,'event':'pull_request','path':'.github/workflows/claude-review.yml',
+                'pull_requests':[{'number':8 if self.wrong_pr else 7}],'status':'in_progress' if self.busy else 'completed'}
+    def call(self,path):
+        if path.startswith('actions/workflows/'):return {'total_count':1,'workflow_runs':[self.run()]}
+        if path=='actions/runs/7':return self.run()
+        if path=='actions/runs/7/jobs?filter=latest&per_page=100':
+            return {'total_count':3,'jobs':[{'id':10,'name':'claude-review','status':'completed'},
+                    {'id':11,'name':'claude-security-review','status':'completed'},
+                    {'id':12,'name':'claude-review-rows','status':'in_progress' if self.dependent_busy else 'completed'}]}
+        raise AssertionError(path)
+
 class Updates(unittest.TestCase):
-    def test_completed_rows_refresh_but_busy_rows_and_old_heads_never_do(self):
-        class API:
-            moved=False;busy=False;old_run=False;wrong_pr=False
-            def pull(self,pr):return {'state':'open','draft':False,'head':{'sha':OLD if self.moved else SHA}}
-            def call(self,path):
-                if path.startswith('actions/workflows/'):
-                    return {'total_count':1,'workflow_runs':[{'id':7,'head_sha':OLD if self.old_run else SHA,'event':'pull_request','path':'.github/workflows/claude-review.yml','pull_requests':[{'number':8 if self.wrong_pr else 7}]}]}
-                return {'total_count':2,'jobs':[{'id':10,'name':'claude-review','status':'in_progress' if self.busy else 'completed'}, {'id':11,'name':'claude-security-review','status':'completed'}]}
-        api=API();calls=[]
-        event={'comment':summary(),'issue':{'number':7,'pull_request':{'url':'https://api.github.com/repos/acme/project/pulls/7'}}}
-        u.update(api,event,calls.append);self.assertEqual([10,11],calls)
+    def event(self,c=None):return {'comment':c or summary(),'issue':{'number':7,'pull_request':{'url':'example'}}}
+    def test_completed_workflow_refreshes_once_but_busy_and_old_heads_never_do(self):
+        api=UpdateAPI();calls=[]
+        u.update(api,self.event(),calls.append);self.assertEqual([7],calls)
         calls.clear();api.busy=True
-        with self.assertRaises(u.b.Refused):u.update(api,event,calls.append,wait_seconds=0)
+        with self.assertRaises(u.b.Refused):u.update(api,self.event(),calls.append,wait_seconds=0)
         self.assertEqual([],calls)
-        u.update(api,event,calls.append,sleep=lambda _:setattr(api,'busy',False));self.assertEqual([10,11],calls);calls.clear()
-        api.busy=False;api.moved=True;u.update(api,event,calls.append);self.assertEqual([],calls)
-        api.moved=False;api.old_run=True;u.update(api,event,calls.append);self.assertEqual([],calls)
-        api.old_run=False;api.wrong_pr=True;u.update(api,event,calls.append);self.assertEqual([],calls)
+        u.update(api,self.event(),calls.append,sleep=lambda _:setattr(api,'busy',False));self.assertEqual([7],calls);calls.clear()
+        api.busy=False;api.moved=True;u.update(api,self.event(),calls.append);self.assertEqual([],calls)
+        api.moved=False;api.old_run=True;u.update(api,self.event(),calls.append);self.assertEqual([],calls)
+        api.old_run=False;api.wrong_pr=True;u.update(api,self.event(),calls.append);self.assertEqual([],calls)
+    def test_dependent_row_job_must_finish_before_one_whole_workflow_rerun(self):
+        api=UpdateAPI();api.dependent_busy=True;calls=[];waits=[]
+        with self.assertRaises(u.b.Refused):u.update(api,self.event(),calls.append,wait_seconds=0)
+        self.assertEqual([],calls)
+        def sleep(seconds):
+            self.assertEqual([],calls);waits.append(seconds);api.dependent_busy=False
+        u.update(api,self.event(),calls.append,sleep=sleep)
+        self.assertTrue(waits);self.assertEqual([7],calls)
+    def test_a_concurrent_restart_keeps_the_event_until_a_rerun_is_accepted(self):
+        api=UpdateAPI();calls=[];waits=[]
+        def rerun(run_id):
+            calls.append(run_id)
+            if len(calls)==1:api.busy=True;return False
+            return True
+        def sleep(seconds):waits.append(seconds);api.busy=False
+        u.update(api,self.event(),rerun,sleep=sleep)
+        self.assertTrue(waits);self.assertEqual([7,7],calls)
+    def test_waiting_for_the_full_workflow_still_checks_the_head(self):
+        api=UpdateAPI();api.busy=True;calls=[]
+        u.update(api,self.event(),calls.append,sleep=lambda _:setattr(api,'moved',True))
+        self.assertEqual([],calls)
     def test_old_or_null_replacement_still_invalidates_current_head_rows(self):
-        class API:
-            def pull(self,pr):return {'state':'open','head':{'sha':SHA}}
-            def call(self,path):
-                if path.startswith('actions/workflows/'):
-                    return {'total_count':1,'workflow_runs':[{'id':7,'head_sha':SHA,'event':'pull_request','path':'.github/workflows/claude-review.yml','pull_requests':[{'number':7}]}]}
-                return {'total_count':2,'jobs':[{'id':10,'name':'claude-review','status':'completed'},{'id':11,'name':'claude-security-review','status':'completed'}]}
         null_state=summary();null_state['body']=null_state['body'].replace('"commit_sha": '+json.dumps(SHA),'"commit_sha": null',1)
         for replacement in [summary(sha=OLD),null_state]:
-            calls=[];u.update(API(),{'comment':replacement,'issue':{'number':7,'pull_request':{'url':'example'}}},calls.append)
-            self.assertEqual([10,11],calls)
+            calls=[];u.update(UpdateAPI(),self.event(replacement),calls.append)
+            self.assertEqual([7],calls)
     def test_security_and_deleted_receipts_invalidate_their_own_rows(self):
-        class API:
-            def pull(self,pr):return {'state':'open','head':{'sha':SHA}}
-            def call(self,path):
-                if path.startswith('actions/workflows/'):
-                    return {'total_count':1,'workflow_runs':[{'id':7,'head_sha':SHA,'event':'pull_request','path':'.github/workflows/claude-review.yml','pull_requests':[{'number':7}]}]}
-                return {'total_count':2,'jobs':[{'id':10,'name':'claude-review','status':'completed'}, {'id':11,'name':'claude-security-review','status':'completed'}]}
-        calls=[];event={'action':'deleted','comment':summary(kind='security'),'issue':{'number':7,'pull_request':{'url':'example'}}}
-        u.update(API(),event,calls.append);self.assertEqual([10,11],calls)
-        calls.clear();event['comment']=receipt();u.update(API(),event,calls.append);self.assertEqual([10,11],calls)
+        calls=[];event={**self.event(summary(kind='security')),'action':'deleted'}
+        u.update(UpdateAPI(),event,calls.append);self.assertEqual([7],calls)
+        calls.clear();event['comment']=receipt();u.update(UpdateAPI(),event,calls.append);self.assertEqual([7],calls)
         calls.clear();event['comment'].pop('performed_via_github_app')
         self.assertFalse(m.trusted(event['comment']))
-        u.update(API(),event,calls.append);self.assertEqual([10,11],calls)
+        u.update(UpdateAPI(),event,calls.append);self.assertEqual([7],calls)
         calls.clear();event['comment']['body']='removed header'
-        u.update(API(),event,calls.append);self.assertEqual([10,11],calls)
+        u.update(UpdateAPI(),event,calls.append);self.assertEqual([7],calls)
         calls.clear();event['comment']['user']['id']=42
-        u.update(API(),event,calls.append);self.assertEqual([],calls)
+        u.update(UpdateAPI(),event,calls.append);self.assertEqual([],calls)
 
 if __name__=='__main__':unittest.main()

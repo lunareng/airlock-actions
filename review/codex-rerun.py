@@ -21,7 +21,6 @@ def update(api, event, rerun, wait_seconds=1200, sleep=time.sleep, clock=time.mo
     if type(pr) is not int or pr<1 or not issue.get('pull_request'):raise b.Refused('invalid PR event')
     pull=api.pull(pr);sha=pull.get('head',{}).get('sha')
     if pull.get('state')!='open' or pull.get('draft') or not b.SHA.fullmatch(sha or ''):return 'no open reviewable PR'
-    kinds=['code','security']
     # Only the exact adoption workflow and current PR head; never cancel/rerun another head's work.
     runs=api.call('actions/workflows/claude-review.yml/runs?event=pull_request&head_sha='+sha+'&per_page=100')
     entries=runs.get('workflow_runs',[])
@@ -29,28 +28,29 @@ def update(api, event, rerun, wait_seconds=1200, sleep=time.sleep, clock=time.mo
     matches=[r for r in entries if r.get('head_sha')==sha and r.get('event')=='pull_request' and r.get('path')=='.github/workflows/claude-review.yml' and len(r.get('pull_requests',[]))==1 and r['pull_requests'][0].get('number')==pr]
     if not matches:return 'no push-time review yet'
     run=max(matches,key=lambda r:r['id'])
+    run_id=run.get('id')
+    if type(run_id) is not int or run_id<1:raise b.Refused('invalid review workflow id')
     deadline=clock()+wait_seconds
     while True:
         latest=api.pull(pr)
         if latest.get('head',{}).get('sha')!=sha or latest.get('state')!='open':return 'head moved; no rerun'
-        jobs=api.call(f'actions/runs/{run["id"]}/jobs?filter=latest&per_page=100')
-        if jobs.get('total_count')!=len(jobs.get('jobs',[])):raise b.Refused('review job list incomplete')
-        targets=[]
-        for kind in kinds:
-            name='claude-review' if kind=='code' else 'claude-security-review'
-            candidates=[j for j in jobs['jobs'] if j.get('name')==name]
-            if len(candidates)!=1:raise b.Refused('review job unavailable or ambiguous')
-            targets.append(candidates[0])
-        if all(j.get('status')=='completed' for j in targets):break
+        current=api.call(f'actions/runs/{run_id}')
+        if current.get('id')!=run_id or current.get('head_sha')!=sha or current.get('event')!='pull_request' or current.get('path')!='.github/workflows/claude-review.yml' or len(current.get('pull_requests',[]))!=1 or current['pull_requests'][0].get('number')!=pr:
+            raise b.Refused('review workflow identity changed')
+        # A job rerun also restarts its dependents. Wait for the entire workflow,
+        # including row reconciliation, then refresh both reviews atomically.
+        if current.get('status')=='completed':
+            jobs=api.call(f'actions/runs/{run_id}/jobs?filter=latest&per_page=100')
+            if jobs.get('total_count')!=len(jobs.get('jobs',[])):raise b.Refused('review job list incomplete')
+            for name in ['claude-review','claude-security-review']:
+                if len([j for j in jobs['jobs'] if j.get('name')==name])!=1:raise b.Refused('review job unavailable or ambiguous')
+            if all(j.get('status')=='completed' for j in jobs['jobs']):
+                latest=api.pull(pr)
+                if latest.get('head',{}).get('sha')!=sha or latest.get('state')!='open':return 'head moved; no rerun'
+                if rerun(run_id) is not False:
+                    return 'current-head review workflow rerun; no verdict issued by this handler'
         if clock()>=deadline:raise b.Refused('review still busy; invalidation was not discarded')
         sleep(min(15,max(0,deadline-clock())))
-    for job in targets:
-        latest=api.pull(pr)
-        if latest.get('head',{}).get('sha')!=sha or latest.get('state')!='open':return 'head moved; no rerun'
-        job_id=job.get('id')
-        if type(job_id) is not int or job_id<1:raise b.Refused('invalid review job id')
-        rerun(job_id)
-    return 'current-head review jobs rerun; no verdict issued by this handler'
 
 def main():
     repo=os.environ.get('REPO','')
@@ -60,10 +60,15 @@ def main():
     except (KeyError,OSError,ValueError):raise b.Refused('review event unreadable') from None
     if (event.get('repository') or {}).get('full_name')!=repo:raise b.Refused('cross-repository event refused')
     api=b.GitHub(repo)
-    def rerun(job_id):
-        try:r=subprocess.run(['gh','api','--method','POST',f'repos/{repo}/actions/jobs/{job_id}/rerun'],capture_output=True,timeout=30)
+    def rerun(run_id):
+        try:r=subprocess.run(['gh','api','--method','POST',f'repos/{repo}/actions/runs/{run_id}/rerun'],capture_output=True,timeout=30)
         except (OSError,subprocess.TimeoutExpired):raise b.Refused('could not refresh review job') from None
-        if r.returncode:raise b.Refused('could not refresh review job')
+        if r.returncode:
+            # Another reconciler can restart it between our read and POST.
+            # Retain the invalidation and wait out that attempt too.
+            if api.call(f'actions/runs/{run_id}').get('status')!='completed':return False
+            raise b.Refused('could not refresh review workflow')
+        return True
     print(update(api,event,rerun))
 
 if __name__=='__main__':
