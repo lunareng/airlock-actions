@@ -1,12 +1,12 @@
 # Temporary integration proof for this PR. No production review verdict and no checkout of the PR head.
-name: Codex app transport proof
+name: Codex app receipt proof
 on:
   pull_request:
     types: [opened, synchronize, ready_for_review]
 permissions:
   contents: read
-  issues: write
-  pull-requests: write
+  issues: read
+  pull-requests: read
 concurrency:
   group: codex-app-transport-${{ github.event.pull_request.number }}
   cancel-in-progress: true
@@ -14,13 +14,13 @@ jobs:
   transport:
     if: github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'codex/app-review-gate'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          ref: 946e1c54ff1dfa7d34070fc91af769a614652201 # fixed bridge/probe source; never PR code
+          ref: 1305918c5e15d31f5eac9f644c401a3161fd9fd4 # fixed read-only observer source; never PR code
           persist-credentials: false
-      - name: workflow-token requests receive current-head code and security reviews
+      - name: observe current-head code and security review receipts
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
