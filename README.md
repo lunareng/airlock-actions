@@ -213,6 +213,8 @@ Output `problems`: how many it found.
 
 ## The review
 
+Reviews can also use the connected Codex GitHub app with `provider: codex`, without a Claude CLI credential. The default remains Claude. Both paths preserve the existing check names and current-head human approval rules. See [review providers](review/README.md) for trust, charter checks, security, setup and failure behavior.
+
 `lunareng/airlock-actions/review` has Claude review each pull request against the autonomy charter: signal, intent, floors, proof, secrets and goals. The review's last line is its verdict on the PR's head commit, and the action turns that verdict into the job's result, so the `claude-review` check is one your branch protection can require. `lunareng/airlock-actions/review/security` runs an advisory `/security-review`. Both are composite actions, so the checks keep your jobs' names.
 
 The verdict binds only agents' PRs. An agent's PR passes on a PASS for its current commit, or on a person's approving review of that commit. Anyone else's PR gets the verdict as a warning, because the person who merges it is its reviewer.
@@ -252,7 +254,9 @@ jobs:
 | `claude-code-oauth-token` | | Required: the token Claude Code runs on. |
 | `agent-logins` | `*[bot]` | The logins whose PRs the verdict binds. `*` is the only wildcard. (review only) |
 | `human-owner` | `the human owner` | How the reviewer names who merges L1/L2 PRs. (review only) |
-| `model` | `claude-opus-5-5` | The model the review runs on. |
+| `provider` | `claude` | `claude` or `codex` (the connected GitHub app). |
+| `codex-wait-seconds` | `900` | Maximum wait for a current-head app receipt. |
+| `model` | `claude-opus-5-5` | The Claude model; the Codex app chooses its own model. |
 
 ## Validate
 

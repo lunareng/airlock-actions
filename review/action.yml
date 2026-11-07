@@ -1,9 +1,15 @@
 name: claude review
 description: 'Claude reviews the pull request against the autonomy charter (signal, intent, floors, proof, secrets, goals) and ends its comment with a verdict on the head commit, which the last step turns into this job''s result. The verdict binds agents'' PRs; anyone else''s gets it as a warning. Run it as the steps of a job named claude-review, with permissions contents: read, pull-requests: write, issues: write, id-token: write, actions: read. A separate job on review/rerun, with only actions: write, makes the push-time row agree after a person''s review; never give this job actions: write, since it runs a model over the PR.'
 inputs:
+  provider:
+    description: claude or codex; Codex uses the connected GitHub app without a CLI credential
+    default: claude
+  codex-wait-seconds:
+    description: maximum seconds to wait for a current-head Codex app receipt (0 to 900)
+    default: "900"
   claude-code-oauth-token:
     description: the token Claude Code runs on (pass secrets.CLAUDE_CODE_OAUTH_TOKEN)
-    required: true
+    required: false
   model:
     description: the model the review runs on
     default: claude-opus-5-5
@@ -19,10 +25,17 @@ inputs:
 runs:
   using: composite
   steps:
+  - name: validate review provider
+    shell: bash
+    env:
+      PROVIDER: ${{ inputs.provider }}
+    run: |
+      case "$PROVIDER" in claude|codex) ;; *) echo "::error::review provider must be claude or codex"; exit 1 ;; esac
   # The full history, for the Markdown-only and workflow-change diffs below. Each is from the merge base (three dots): the
   # checkout's merge commit can be older than the base branch, and a two-dot diff then reads what main gained since as
   # this PR's change (lunareng/airlock#178 read as a workflow PR because main's workflow moved while it waited).
   - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+    if: inputs.provider == 'claude'
     with:
       fetch-depth: 0
       persist-credentials: false # the reviewer reads this checkout; it has no business holding the job's token
@@ -41,12 +54,26 @@ runs:
       echo "${GH_SHA256}  $dir/gh.tar.gz" | sha256sum -c -
       tar xzf "$dir/gh.tar.gz" -C "$dir" --strip-components=2 "gh_${GH_VERSION}_linux_amd64/bin/gh"
       echo "$dir" >> "$GITHUB_PATH"
+  - name: Codex GitHub app review
+    if: inputs.provider == 'codex'
+    shell: bash
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      PR: ${{ github.event.pull_request.number }}
+      SHA: ${{ github.event.pull_request.head.sha }}
+      AGENTS: ${{ inputs.agent-logins }}
+      KIND: code
+      WAIT: ${{ inputs.codex-wait-seconds }}
+      HERE: ${{ github.action_path }}
+    run: python3 -I "$HERE/codex.py"
   # A person's PR that only changes Markdown (a GOALS.md line, a README) is direction, not code: the person merging it
   # is its reviewer, and the model is not spent on it (Matthew, 2026-10-22). An agent's docs PR is still reviewed: a
   # goal an agent proposes is exactly what the charter's checks are for.
   # A PR that changes a workflow is never reviewed by claude-code-action (see the verdict step), so neither attempt
   # below runs on one: `workflows` skips them, and the verdict step says so on the PR.
   - id: docs
+    if: inputs.provider == 'claude'
     env:
       AUTHOR: ${{ github.event.pull_request.user.login }}
       BASE_REF: ${{ github.event.pull_request.base.ref }}
@@ -63,7 +90,7 @@ runs:
   # review/rerun. A FAIL is reviewed again only on a person's re-run, since a fixed PR body is new work with no new commit;
   # a bot's re-run reads it, so a dismissed approval can't roll the dice for a new verdict.
   - id: already
-    if: github.event_name == 'pull_request'
+    if: inputs.provider == 'claude' && (github.event_name == 'pull_request')
     shell: bash
     env:
       GH_TOKEN: ${{ github.token }}
@@ -85,7 +112,7 @@ runs:
   # The reviewer's prompt, built once from the PR's values (passed through env, never expanded in a script) so both
   # attempts below read the same text.
   - id: prompt
-    if: github.event_name == 'pull_request' && steps.docs.outputs.only != 'true' && steps.docs.outputs.workflows != 'true' && steps.already.outputs.found != 'true'
+    if: inputs.provider == 'claude' && (github.event_name == 'pull_request' && steps.docs.outputs.only != 'true' && steps.docs.outputs.workflows != 'true' && steps.already.outputs.found != 'true')
     shell: bash
     env:
       HUMAN: ${{ inputs.human-owner }}
@@ -118,7 +145,7 @@ runs:
           f.write(f"text<<{eof}\n{text}\n{eof}\n")
       PY
   - id: review
-    if: github.event_name == 'pull_request' && steps.docs.outputs.only != 'true' && steps.docs.outputs.workflows != 'true' && steps.already.outputs.found != 'true'
+    if: inputs.provider == 'claude' && (github.event_name == 'pull_request' && steps.docs.outputs.only != 'true' && steps.docs.outputs.workflows != 'true' && steps.already.outputs.found != 'true')
     uses: anthropics/claude-code-action@aa8a7738e48bf30a40ee499ce818bef081c5ab5e # v1.0.257
     with:
       claude_code_oauth_token: ${{ inputs.claude-code-oauth-token }}
@@ -132,7 +159,7 @@ runs:
   # Did it post a verdict for this head? Twice on lunareng/airlock it finished green without one, and a re-run fixed it
   # (lunareng/autonomy#204), so it gets one more attempt before the verdict step decides.
   - id: posted
-    if: github.event_name == 'pull_request' && steps.docs.outputs.only != 'true' && steps.docs.outputs.workflows != 'true' && steps.already.outputs.found != 'true'
+    if: inputs.provider == 'claude' && (github.event_name == 'pull_request' && steps.docs.outputs.only != 'true' && steps.docs.outputs.workflows != 'true' && steps.already.outputs.found != 'true')
     shell: bash
     env:
       GH_TOKEN: ${{ github.token }}
@@ -143,7 +170,7 @@ runs:
       n="$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" --jq '.[] | select(.user.login == "claude[bot]") | .body | split("\n") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0)) | last // "" | select(. == "Verdict: PASS ('"$SHA"')" or . == "Verdict: FAIL ('"$SHA"')")' | wc -l)"
       if [ "$n" -gt 0 ]; then echo "found=true" >> "$GITHUB_OUTPUT"; else echo "found=false" >> "$GITHUB_OUTPUT"; echo "::warning::the review posted no verdict for $SHA; running it once more"; fi
   - id: review-again
-    if: github.event_name == 'pull_request' && steps.docs.outputs.only != 'true' && steps.docs.outputs.workflows != 'true' && steps.already.outputs.found != 'true' && steps.posted.outputs.found == 'false'
+    if: inputs.provider == 'claude' && (github.event_name == 'pull_request' && steps.docs.outputs.only != 'true' && steps.docs.outputs.workflows != 'true' && steps.already.outputs.found != 'true' && steps.posted.outputs.found == 'false')
     uses: anthropics/claude-code-action@aa8a7738e48bf30a40ee499ce818bef081c5ab5e # v1.0.257
     with:
       claude_code_oauth_token: ${{ inputs.claude-code-oauth-token }}
@@ -157,7 +184,7 @@ runs:
   # A review can land seconds after a push, while the push-time run is still reviewing (a role's own review, say). Read
   # its verdict, don't race it: on lunareng/airlock#69 this run failed in 6 seconds, 94 before the review passed.
   - name: wait for the push-time review
-    if: github.event_name == 'pull_request_review'
+    if: inputs.provider == 'claude' && (github.event_name == 'pull_request_review')
     shell: bash
     env:
       GH_TOKEN: ${{ github.token }}
@@ -170,6 +197,7 @@ runs:
   # The verdict step: academy#117's judge rounds (only claude[bot]'s comments, only this head, the last line matched
   # whole) and api#1086 (claude-code-action's token exchange refuses a PR that changes a workflow).
   - name: verdict
+    if: inputs.provider == 'claude'
     env:
       GH_TOKEN: ${{ github.token }}
       ONLY_DOCS: ${{ steps.docs.outputs.only }}

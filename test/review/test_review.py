@@ -263,7 +263,7 @@ assert TEMPLATE["permissions"]["actions"] == "read" and TEMPLATE["jobs"]["rows"]
 assert TEMPLATE["jobs"]["rows"]["name"] != "claude-review" and "review/rerun@" in TEMPLATE["jobs"]["rows"]["steps"][0]["uses"]
 assert "needs.review.result == 'failure'" in TEMPLATE["jobs"]["rows"]["if"], "a cancelled review says nothing about the row"
 assert "event_name" not in TEMPLATE["jobs"]["rows"]["if"], "both directions: a push can clear a stale review row too"
-assert wait["if"] == "github.event_name == 'pull_request_review'" and "--wait-only" in wait["run"]
+assert wait["if"] == "inputs.provider == 'claude' && (github.event_name == 'pull_request_review')" and "--wait-only" in wait["run"]
 assert again["env"]["PASSED"] == "${{ inputs.passed }}"
 assert "--job claude-review" in again["run"] and "${{" not in again["run"]
 assert again["run"].index(".head.sha") < again["run"].index("rerun.py"), "an old head's re-run must not cancel the new head's review"
