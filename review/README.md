@@ -33,9 +33,9 @@ GitHub app and bot IDs and reads the observed `codex-review-state:v1` envelope. 
 resolved thread, missing review kind, older result or unreadable/truncated response is no pass. The newest
 trusted summary wins, including a newer running or failed review. Review-format changes fail closed.
 
-Code Review also needs a trusted completion receipt after the PR body's last edit; the short hash in that
+Code Review also needs its own service-generated Code Review completion timestamp and a trusted completion receipt after the PR body's last edit; the short hash in that
 receipt establishes freshness only, never identity without the full-SHA state. The current head and body are
-checked before and after polling. The `edited` PR event reruns the check; an old intent review waits for a new
+checked before and after polling. A later Security Review cannot freshen an old Code Review through the summary’s shared update timestamp. The `edited` PR event reruns the check; an old intent review waits for a new
 app review. Signal/tool-request delivery markers are checked deterministically before model results count.
 
 The installed rubric preserves signal, intent, floors, proof, secrets/data and goals. An agent's workflow or
@@ -74,5 +74,5 @@ checks the app's code and security receipts. It cannot override the human-review
 Opting into the rubric also installs `codex-review-results.yml`. It handles OpenAI app summary/receipt creation,
 edits and deletion on the default branch, with no PR checkout. The pinned `review/codex-rerun` action validates
 immutable app identity, repository and current head, then reruns completed `claude-review` / `claude-security-review`
-rows from the exact adopted workflow. Busy rows already poll the state. The handler never writes a passing
+rows from the exact adopted workflow. A replacement summary with an old or null head also invalidates the current rows, matching the observer’s refusal rules. Busy rows already poll the state. The handler never writes a passing
 status itself. Its Actions-write token is isolated from model/review jobs, and it never follows an old head.
