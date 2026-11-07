@@ -1,0 +1,21 @@
+# App result updates/deletions must refresh the required row, even when the PR commit did not change.
+# issue_comment uses the default-branch workflow. This job executes only a pinned metadata reader.
+name: refresh Codex review
+on:
+  issue_comment:
+    types: [created, edited, deleted]
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+  actions: write # isolated from the review/model jobs; this handler can rerun, never grant a verdict
+concurrency:
+  group: codex-review-result-${{ github.event.issue.number }}
+  cancel-in-progress: true
+jobs:
+  refresh:
+    if: ${{ github.event.issue.pull_request && github.event.comment.user.id == 199175422 && github.event.comment.performed_via_github_app.id == 1144995 && (vars.AIRLOCK_REVIEW_PROVIDER || vars.AIRLOCK_AGENT_PROVIDER || 'claude') == 'codex' }}
+    runs-on: ubuntu-latest # public repo: hosted, no self-hosted credentials
+    timeout-minutes: 5
+    steps:
+      - uses: lunareng/airlock-actions/review/codex-rerun@fa180e116a842de06fc3b1e400ab329e626d62fb # app-bridge source, PR #58

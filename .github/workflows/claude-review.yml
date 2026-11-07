@@ -4,7 +4,7 @@
 name: claude review
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review, edited]
   pull_request_review: # a person's approval re-runs only the verdict step (an agent's workflow PR waits for one)
     types: [submitted, dismissed]
 permissions:
@@ -24,8 +24,9 @@ jobs:
     runs-on: ubuntu-latest # a public repository: GitHub-hosted runners, free, and the self-hosted pools take no public repositories
     timeout-minutes: 20
     steps:
-      - uses: lunareng/airlock-actions/review@001c60e9354ab5e663720bbb7e6dcdd6adfa1c90 # main at lunareng/airlock-actions 001c60e
+      - uses: lunareng/airlock-actions/review@fa180e116a842de06fc3b1e400ab329e626d62fb # reviewed app-bridge source, PR #58
         with:
+          provider: ${{ vars.AIRLOCK_REVIEW_PROVIDER || vars.AIRLOCK_AGENT_PROVIDER || 'claude' }}
           claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           agent-logins: "lunar-*[bot]"
           human-owner: Matthew
@@ -35,8 +36,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: lunareng/airlock-actions/review/security@001c60e9354ab5e663720bbb7e6dcdd6adfa1c90 # main at lunareng/airlock-actions 001c60e
+      - uses: lunareng/airlock-actions/review/security@fa180e116a842de06fc3b1e400ab329e626d62fb # reviewed app-bridge source, PR #58
         with:
+          provider: ${{ vars.AIRLOCK_REVIEW_PROVIDER || vars.AIRLOCK_AGENT_PROVIDER || 'claude' }}
           claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
   # The two claude-review rows, one per event, say the same thing. Its own job, so actions: write never reaches the job
   # above. It must not be named claude-review.
@@ -50,6 +52,6 @@ jobs:
       actions: write
       pull-requests: read
     steps:
-      - uses: lunareng/airlock-actions/review/rerun@001c60e9354ab5e663720bbb7e6dcdd6adfa1c90 # main at lunareng/airlock-actions 001c60e
+      - uses: lunareng/airlock-actions/review/rerun@fa180e116a842de06fc3b1e400ab329e626d62fb # reviewed app-bridge source, PR #58
         with:
           passed: ${{ needs.review.result == 'success' }}
