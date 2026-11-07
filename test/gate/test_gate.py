@@ -588,6 +588,19 @@ with tempfile.TemporaryDirectory() as d:
     out = json.loads(r.stdout)
     assert r.returncode == 1 and out["duties"] is False and verdict_line(out).endswith("And at L1 a person must also act (the L1 lines above)."), \
         ("both blockers at L1: the verdict names both", verdict_line(out))
+    assert out["second_key"] is False, out
+    # Text mode (no --json) names both blockers too, as the job summary and the annotation do.
+    r = subprocess.run([sys.executable, str(GATE_PY), "--base", "HEAD~1", "--author", BOT, "--config", str(cfg), "--stamp-file", str(stamp),
+                        "--pr-file", str(prf), "--approved"], cwd=d, capture_output=True, text=True)
+    verdict = r.stdout.strip().splitlines()[-1]
+    assert r.returncode == 1 and verdict == ("verdict: separation_of_duties is required and the owner's approval doesn't count (the line above)"
+                                             "; and at L1 a person must also act (the L1 lines above)"), ("text mode, both blockers at L1", verdict)
+    prf.write_text(json.dumps({"body": "## Signal\nx\n", "auto_merge": False, "proofs": [], "head_author": BOT}))
+    r = subprocess.run([sys.executable, str(GATE_PY), "--base", "HEAD~1", "--author", BOT, "--config", str(cfg), "--stamp-file", str(stamp),
+                        "--pr-file", str(prf), "--approved"], cwd=d, capture_output=True, text=True)
+    verdict = r.stdout.strip().splitlines()[-1]
+    assert r.returncode == 1 and verdict == "verdict: separation_of_duties is required and the owner's approval doesn't count (the line above)", \
+        ("text mode, the L1 second key held: the duties refusal alone", verdict)
     code, out = approved("db/e.sql", "recorded", ["acme-lead"])
     assert code == 0 and out["allowed"] and any(r.startswith("separation of duties, recorded: the approver (acme-lead) also started") for r in out["reasons"]), out
     code, out = approved("db/f.sql", None, ["acme-lead"])

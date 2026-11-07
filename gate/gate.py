@@ -400,8 +400,7 @@ def verdict_line(g: dict) -> str:
         return ("Verdict: separation_of_duties is required, and the owner's approval doesn't count here: the owner started "
                 "the run that pushed this commit or authored it, or the gate can't tell. A commit pushed by a run the owner "
                 "didn't start (a scheduled run, say), then the owner's approval of it, passes the gate." +
-                (" And at L1 a person must also act (the L1 lines above)." if any("at L1 a person must also act" in r for r in g["reasons"])
-                 else ""))
+                (" And at L1 a person must also act (the L1 lines above)." if g.get("second_key") is False else ""))
     if g["level"] == "L1" and any(r.startswith("the human owner approved") for r in g["reasons"]):
         return ("Verdict: L1, so a person presses merge with auto-merge off; and if the PR owes proof, the owner's approval "
                 "needs a second key: each `## Proof owed` item naming its command and expected output, and the owner's "
@@ -502,9 +501,11 @@ def main() -> int:
         reasons.append(credit)
     allowed = credited and not (agent and RANK[level] <= 2)
     duties = None
+    second = None   # the L1 second key, when the owner's approval is what would pass the PR
     if not allowed and a.approved:
         if level == "L1":
             allowed, why = second_key(pr)
+            second = allowed
             reasons += why
         else:
             allowed = True
@@ -520,7 +521,7 @@ def main() -> int:
     # Every reason once more through shown(): a glob or a key from the PR's own AUTONOMY.yaml can't add a line either.
     reasons = [shown(r) for r in reasons]
     result = {"level": level, "agent": agent, "credited": credited, "allowed": allowed, "changed": len(paths), "reasons": reasons,
-              "level_reasons": level_reasons, "duties": duties}
+              "level_reasons": level_reasons, "duties": duties, "second_key": second}
     if a.json:
         print(json.dumps(result, indent=2))
     else:
@@ -528,7 +529,8 @@ def main() -> int:
         for r in reasons:
             print(f"  - {r}")
         print("verdict: " + ("may merge at this level" if allowed else
-                             "separation_of_duties is required and the owner's approval doesn't count (the line above)" if duties is False else
+                             "separation_of_duties is required and the owner's approval doesn't count (the line above)" +
+                             ("; and at L1 a person must also act (the L1 lines above)" if second is False else "") if duties is False else
                              "L1: the owner approved, but a person must also act: proof for every Proof owed item in a comment, auto-merge off" if a.approved and level == "L1" else
                              "Airlock PR with no credited role: a human takes it from here (an approving review on this commit passes it)" if not credited else
                              "agent PR at L1/L2: a human takes it from here (an approving review on this commit passes it)"))
