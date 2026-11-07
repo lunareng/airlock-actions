@@ -154,9 +154,12 @@ def decision(comments, kind, sha, intent_since, require_start=True, repo=None, p
     if kind == 'code':
         completed = code_completed_at(found, sha)
         started = code_started_at(found, sha)
-        if completed < intent_since or not fresh_receipt(comments, sha, intent_since): return 'pending'
+        if completed < intent_since: return 'pending'
         if started is not None and started > completed: return 'pending'
         if require_start and (started is None or started < intent_since): return 'pending'
+        # Automatic reviews may omit the standalone receipt. A full-head running
+        # snapshot authenticated through edit history proves freshness directly.
+        if not fresh_receipt(comments, sha, intent_since) and (started is None or started < intent_since): return 'pending'
     return 'pass'
 
 def agent(login, pattern):

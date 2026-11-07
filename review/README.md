@@ -16,9 +16,11 @@ runner credential lease, requiring a Claude credential, or using a personal GitH
 3. Update the review action pins, then set `AIRLOCK_REVIEW_PROVIDER=codex`. The template falls back to
    `AIRLOCK_AGENT_PROVIDER`, then `claude`. Unknown providers fail. `adopt.review_ref` can pin this review
    implementation independently of the role-workflow SHA already trusted by Mint and the runner broker.
+4. Verify a real bot-authored push produces an automatic app result and the required exact-head review check.
+   A manually requested review or a person marking a draft ready does not establish unattended push coverage.
 
-The app's automatic settings are independent of the workflow variable: enabling them causes app reviews on
-pushes even while the workflow selects Claude. The pilot selects Codex reviews explicitly, while role runs keep
+The app's automatic settings are independent of the workflow variable. Verify their push behavior with the
+actual bot identity before activation, even while the workflow still selects Claude. The pilot selects Codex reviews explicitly, while role runs keep
 their existing provider. The model input applies to Claude; the GitHub app chooses its own review model.
 
 GitHub Actions bot mentions were tested and **rejected** by the app as an unconnected Codex user. The production
@@ -32,8 +34,11 @@ GitHub app and bot IDs and reads the observed `codex-review-state:v1` envelope. 
 40-character head SHA, `completed`, and both finding flags explicitly false. A reaction, prose, short hash,
 resolved thread, missing review kind, older result or unreadable/truncated response is no pass. A single authoritative summary is required; ambiguous summaries fail. Its running or failed state never reuses an earlier pass. Review-format changes fail closed.
 
-Code Review needs an authentic receipt and its own completion metadata. For an edited body, authenticated history must also prove a matching Code Review started after that edit; the short hash in that
-receipt establishes freshness only, never identity without the full-SHA state. The current head and body are
+Code Review needs its own authenticated completion metadata and freshness proof. A matching full-head
+Code Review start recovered from authenticated history can establish freshness without a standalone receipt
+comment; automatic reviews can omit that extra comment. If no such start is available, an unedited body can
+use the existing fresh-receipt path. For an edited body, authenticated history must always prove a matching
+Code Review started after that edit. A receipt’s short hash never establishes identity without the full-SHA state. The current head and body are
 checked before and after polling. A later Security Review cannot freshen an old Code Review through the summary’s shared update timestamp. The `edited` PR event reruns the check; an old intent review waits for a new
 app review. Signal/tool-request delivery markers are checked deterministically before model results count.
 
@@ -94,6 +99,8 @@ deleted or non-OpenAI history refuses the evidence. REST and GraphQL body/versio
 is keyed by the body, timestamps and edit count, rather than trusting a previously checked comment ID.
 
 Those authenticated historical snapshots also recover Code Review’s own running/start metadata and full SHA.
+That full-head start plus the same review kind’s completion is independent proof when the automatic app
+review posts no standalone receipt; a missing/stale start cannot take this path.
 A body edited during a review cannot borrow that review’s later completion. After a body edit, push a correction
 or request a new app review; a completed review alone is not evidence that the new intent was read. The observer
 rechecks intent and evidence before returning. A body changed and restored still has a newer edit timestamp.

@@ -91,6 +91,28 @@ class Refusals(unittest.TestCase):
         clean['_review_versions']=[{'body':old_start,'at':NOW}]
         # The body changed during review: completion/receipt are fresh but the reviewed input was old.
         self.assertEqual('pending',m.decision([clean,fresh],'code',SHA,m.stamp('2026-01-01T00:00:30Z'),require_start=True))
+    def automatic_without_receipt(self):
+        data=json.loads((ROOT/'test/review/fixtures/codex-automatic-no-receipt.json').read_text())
+        c=comment(data['body']);c['_review_versions']=data['versions']
+        return c,data['intent_since']
+    def test_observed_automatic_review_passes_from_its_authenticated_full_head_start(self):
+        c,since=self.automatic_without_receipt()
+        self.assertFalse(m.fresh_receipt([c],SHA,since))
+        self.assertEqual('pass',m.decision([c],'code',SHA,since,require_start=True))
+    def test_receipt_free_completion_still_requires_a_fresh_authenticated_start(self):
+        c,since=self.automatic_without_receipt()
+        self.assertEqual('pending',m.decision([c],'code',SHA,m.code_started_at({'comment':c},SHA)+1,require_start=True))
+        c['_review_versions']=[]
+        self.assertEqual('pending',m.decision([c],'code',SHA,since,require_start=True))
+        c,since=self.automatic_without_receipt();c['_history_verified']=False
+        with self.assertRaises(m.Refused):m.decision([c],'code',SHA,since,require_start=True)
+    def test_receipt_free_completion_cannot_borrow_an_old_head_or_clear_findings(self):
+        c,since=self.automatic_without_receipt()
+        c['_review_versions']=[{**v,'body':v['body'].replace(SHA,OLD)} for v in c['_review_versions']]
+        self.assertEqual('pending',m.decision([c],'code',SHA,since,require_start=True))
+        c,since=self.automatic_without_receipt()
+        c['body']=c['body'].replace('"has_any_findings":false','"has_any_findings":true',1)
+        self.assertEqual('findings',m.decision([c],'code',SHA,since,require_start=True))
     def test_a_newer_review_start_cannot_borrow_an_older_completion(self):
         clean=summary();running=summary(status='running',code_time='2026-01-01T00:02:00Z')
         running['body']=running['body'].replace('✅ **Completed**','🔄 **Running** since')
