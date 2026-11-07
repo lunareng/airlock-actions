@@ -36,7 +36,7 @@ import generate  # noqa: E402  (this repository's generator: the same settings, 
 sys.path.insert(0, str(HERE.parent / "review"))
 import codex as codex_review  # noqa: E402
 
-TEMPLATES = {"autonomy-gate.yml": HERE / "templates" / "autonomy-gate.yml", "claude-review.yml": HERE / "templates" / "claude-review.yml"}
+TEMPLATES = {"autonomy-gate.yml": HERE / "templates" / "autonomy-gate.yml", "claude-review.yml": HERE / "templates" / "claude-review.yml", "codex-review-results.yml": HERE / "templates" / "codex-review-results.yml"}
 PLACEHOLDER = re.compile(r"<airlock:(\w+)>")
 BEGIN, END = "<!-- autonomy:begin", "<!-- autonomy:end -->"
 NEW_CLAUDE = "# CLAUDE.md\n\nGuidance for Claude Code in this repository.\n"
@@ -98,6 +98,7 @@ class Adopt:
         v = self.values()
         out = {}
         for name, path in TEMPLATES.items():
+            if name == "codex-review-results.yml" and not self.codex_review_rules: continue
             def fill(m, name=name):
                 if m.group(1) not in v:
                     raise AdoptError(f"adopt/templates/{name}: unknown placeholder {m.group(0)}")
@@ -175,7 +176,7 @@ def install_codex_rules(d: Path) -> None:
 
 
 def adopted(ad: Adopt) -> list[str]:
-    return ADOPTED + (["AGENTS.md"] if ad.codex_review_rules else [])
+    return ADOPTED + (["AGENTS.md", ".github/workflows/codex-review-results.yml"] if ad.codex_review_rules else [])
 
 
 def sh(*args: str, cwd: Path | None = None, check: bool = True, stdin: str | None = None) -> subprocess.CompletedProcess:

@@ -57,7 +57,7 @@ with:
 
 `codex-wait-seconds` defaults to 900 (maximum 900), within the 20-minute job budget. Codex alone needs only
 Contents, Issues and Pull requests read. Existing mixed-provider callers retain Claude's write permissions;
-only the separate existing row-reconciliation job has Actions write. No `pull_request_target` is added.
+only the separate row-reconciliation and app-result refresh jobs have Actions write. No `pull_request_target` is added.
 
 [Official GitHub review setup](https://learn.chatgpt.com/docs/third-party/github) and
 [Security Review access and thresholds](https://learn.chatgpt.com/docs/security/security-review).
@@ -68,3 +68,11 @@ only the separate existing row-reconciliation job has Actions write. No `pull_re
 `python test/review/test_codex.py` plants forged identities, stale/short hashes, duplicate JSON, missing security,
 resolved findings, modified/missing base rules, changed intent and head races. A non-gating live observer probe
 checks the app's code and security receipts. It cannot override the human-review rule for workflow changes.
+
+## Result changes on the same commit
+
+Opting into the rubric also installs `codex-review-results.yml`. It handles OpenAI app summary/receipt creation,
+edits and deletion on the default branch, with no PR checkout. The pinned `review/codex-rerun` action validates
+immutable app identity, repository and current head, then reruns completed `claude-review` / `claude-security-review`
+rows from the exact adopted workflow. Busy rows already poll the state. The handler never writes a passing
+status itself. Its Actions-write token is isolated from model/review jobs, and it never follows an old head.
