@@ -297,6 +297,13 @@ jobs:
 
 Output `problems`: how many it found.
 
+## Stack maintenance (engine; rollout pending)
+
+[`restack/`](restack/README.md) prepares and verifies dependent PR branches after their bottom PR merges,
+then publishes the stack with one atomic push and explicit leases. It defaults to a read-only dry run and
+requires an existing scoped App token. No merge-event hook or production activation is installed here;
+[autonomy#79](https://github.com/lunareng/autonomy/issues/79) tracks the remaining integration and rollout.
+
 ## The review workflow
 
 `lunareng/airlock-actions/.github/workflows/review.yml` has Claude review each pull request against the autonomy charter: signal, intent, floors, proof, secrets and goals. The review's last line is its verdict on the PR's head commit, and its `claude-review` job turns that verdict into a check your branch protection can require. It also runs an advisory `/security-review`.
