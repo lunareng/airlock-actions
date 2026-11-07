@@ -503,5 +503,102 @@ with tempfile.TemporaryDirectory() as d:
     assert "no floors, no gate" in r.stdout and '"level"' not in r.stdout, "no level at all from floors it can't read"
 print("ok  through the CLI, config.yaml's floors score the PR, and floors it can't read fail it")
 
+# Separation of duties (lunareng/airlock#84, SOC 2 CC8.1): the approver is neither the run's dispatcher nor the head
+# commit's author. `required` refuses that approval, and one it can't check; `recorded`, the default, says so and passes.
+from gate import DutiesError, duties_mode, separation_of_duties  # noqa: E402
+assert duties_mode({}) == duties_mode({"separation_of_duties": None}) == "recorded", "absent: recorded"
+assert duties_mode({"separation_of_duties": "required"}) == "required"
+for bad in ("require", "Required", True, ["required"]):
+    try:
+        duties_mode({"separation_of_duties": bad})
+        raise AssertionError(f"separation_of_duties {bad!r} should not read")
+    except DutiesError as e:
+        assert "not required or recorded" in str(e), str(e)
+BOT = "lunar-astronauts[bot]"
+ok, why = separation_of_duties("required", "@Pyrabbit", {"role": "clerk", "startedBy": ["pyrabbit"]}, BOT)
+assert not ok and "also started the run that pushed it" in why and "doesn't count" in why, why
+ok, why = separation_of_duties("required", "@pyrabbit", {"role": "clerk", "startedBy": ["octocat", "PyRabbit"]}, BOT)
+assert not ok, "a dispatcher among several, in another case, is still the dispatcher"
+ok, why = separation_of_duties("required", "@pyrabbit", {"role": "clerk", "startedBy": []}, "pyrabbit")
+assert not ok and "also authored it" in why, "the head commit's author can't approve it either"
+ok, why = separation_of_duties("required", "@pyrabbit", {"role": "clerk", "startedBy": ["pyrabbit"]}, "pyrabbit")
+assert not ok and "started the run that pushed it and authored it" in why, why
+ok, why = separation_of_duties("required", "@pyrabbit", {"role": "clerk", "startedBy": []}, BOT)
+assert ok and "neither started" in why, "a scheduled run's commit: the owner's approval counts"
+ok, why = separation_of_duties("required", "@pyrabbit", {"role": "clerk", "startedBy": ["octocat"]}, BOT)
+assert ok, "another person dispatched it: the owner's approval counts"
+for stamp in ({"role": "clerk", "startedBy": None}, {"role": "clerk"}, None, {"role": "clerk", "startedBy": "pyrabbit"},
+              {"role": "clerk", "startedBy": [1]}, {"role": "clerk", "startedBy": ["a b"]}):
+    ok, why = separation_of_duties("required", "@pyrabbit", stamp, BOT)
+    assert not ok and "can't tell" in why and "doesn't say who started" in why, (stamp, why)
+ok, why = separation_of_duties("required", "@pyrabbit", {"role": "clerk", "startedBy": []}, None)
+assert not ok and "has no GitHub login" in why, "a head commit with no login can't be checked: refused"
+for owner in ("", None, "@", "@acme/owners"):
+    ok, why = separation_of_duties("required", owner, {"role": "clerk", "startedBy": []}, BOT)
+    assert not ok and "isn't one person's login" in why, ("an owner the gate can't compare fails closed", owner, why)
+ok, why = separation_of_duties("recorded", "@pyrabbit", {"role": "clerk", "startedBy": ["pyrabbit"]}, BOT)
+assert ok and why.startswith("separation of duties, recorded: the approver (pyrabbit) also started") and "approval stands" in why, why
+ok, why = separation_of_duties("recorded", "@pyrabbit", None, None)
+assert ok and "can't tell" in why and "approval stands" in why, why
+print("ok  separation of duties: required refuses the dispatcher, the author and can't-tell; recorded notes them")
+
+# Through the CLI: an agent's L2 PR, approved by the owner on its head. With `required`, the dispatcher's approval
+# doesn't pass it (#84's Done means); a scheduled run's commit passes; `recorded` passes and says so; no key is recorded.
+with tempfile.TemporaryDirectory() as d:
+    run = lambda *a: subprocess.run(a, cwd=d, check=True, capture_output=True, text=True)  # noqa: E731
+    run("git", "init", "-q", "-b", "main")
+    Path(d, "AUTONOMY.yaml").write_text("default: L3\npaths:\n  - glob: \"db/**\"\n    level: L2\n  - glob: \"cluster/**\"\n    level: L1\n")
+    run("git", "add", "-A")
+    run("git", "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", "base")
+    cfg, stamp, prf = Path(d, "config.yaml"), Path(d, "stamp.json"), Path(d, "pr.json")
+    def approved(path, mode, started, head_author=BOT, extra=("--approved",)):
+        Path(d, path).parent.mkdir(parents=True, exist_ok=True)
+        Path(d, path).write_text("x\n")
+        run("git", "add", "-A")
+        run("git", "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", path)
+        conf = {"human_owner": "@acme-lead", "agent_markers": {"logins": [BOT]}, "airlock": air}
+        if mode is not None:
+            conf["separation_of_duties"] = mode
+        cfg.write_text(yaml.safe_dump(conf))
+        stamp.write_text(json.dumps({"role": "clerk", "reason": None, "startedBy": started}))
+        prf.write_text(json.dumps({"body": "## Signal\nx\n", "auto_merge": False, "proofs": [], "head_author": head_author}))
+        r = subprocess.run([sys.executable, str(GATE_PY), "--base", "HEAD~1", "--author", BOT, "--config", str(cfg),
+                            "--stamp-file", str(stamp), "--pr-file", str(prf), "--json", *extra], cwd=d, capture_output=True, text=True)
+        return r.returncode, (json.loads(r.stdout) if r.stdout.startswith("{") else r.stdout)
+    code, out = approved("db/a.sql", "required", ["acme-lead"])
+    assert code == 1 and out["level"] == "L2" and out["duties"] is False and not out["allowed"], out
+    assert any("the approver (acme-lead) also started the run" in r for r in out["reasons"]), out
+    assert verdict_line(out).startswith("Verdict: separation_of_duties is required"), verdict_line(out)
+    assert "separation_of_duties refuses that approval" in annotation(out).replace("%0A", "\n"), annotation(out)
+    code, out = approved("db/b.sql", "required", [])
+    assert code == 0 and out["allowed"] and out["duties"] is True, f"a scheduled run's commit, approved: passes; {out}"
+    code, out = approved("db/c.sql", "required", None)
+    assert code == 1 and out["duties"] is False, "required: a stamp that can't say who started the run fails closed"
+    code, out = approved("db/d.sql", "required", [], "acme-lead")
+    assert code == 1 and any("also authored it" in r for r in out["reasons"]), "required: the head commit's author's approval fails"
+    code, out = approved("cluster/a.yaml", "required", ["acme-lead"])
+    assert code == 1 and out["level"] == "L1" and out["duties"] is False, "required binds at L1 too"
+    assert "a person must also act" not in verdict_line(out), "the L1 second key held, so the verdict names the duties refusal alone"
+    Path(d, "cluster/b.yaml").write_text("x\n")
+    run("git", "add", "-A")
+    run("git", "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", "auto-merge on")
+    prf.write_text(json.dumps({"body": "## Signal\nx\n", "auto_merge": True, "proofs": [], "head_author": BOT}))
+    r = subprocess.run([sys.executable, str(GATE_PY), "--base", "HEAD~1", "--author", BOT, "--config", str(cfg), "--stamp-file", str(stamp),
+                        "--pr-file", str(prf), "--json", "--approved"], cwd=d, capture_output=True, text=True)
+    out = json.loads(r.stdout)
+    assert r.returncode == 1 and out["duties"] is False and verdict_line(out).endswith("And at L1 a person must also act (the L1 lines above)."), \
+        ("both blockers at L1: the verdict names both", verdict_line(out))
+    code, out = approved("db/e.sql", "recorded", ["acme-lead"])
+    assert code == 0 and out["allowed"] and any(r.startswith("separation of duties, recorded: the approver (acme-lead) also started") for r in out["reasons"]), out
+    code, out = approved("db/f.sql", None, ["acme-lead"])
+    assert code == 0 and out["allowed"] and any("recorded" in r for r in out["reasons"]), "no key: recorded, as before plus a line"
+    code, out = approved("db/g.sql", "required", ["acme-lead"], extra=())
+    assert code == 1 and out["duties"] is None, "no approval: nothing to check, the PR fails as before"
+    code, out = approved("src/a.ts", "required", ["acme-lead"])
+    assert code == 0 and out["level"] == "L3" and out["duties"] is None, "L3 needs no approval, so whose it would be doesn't matter"
+    code, out = approved("db/h.sql", "require", [])
+    assert code == 1 and out.startswith("::error title=autonomy gate::config.yaml separation_of_duties is 'require'"), out
+print("ok  through the CLI, separation_of_duties required refuses the dispatcher's approval of an L2 PR")
+
 print(f"{'FAIL' if failed else 'OK'}: {failed} failing case(s)")
 sys.exit(1 if failed else 0)

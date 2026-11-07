@@ -7,7 +7,9 @@ description: >
   caller runs on pull_request_review as well as pull_request). A PR Airlock's App opened also fails
   unless Airlock's stamp credits a role with its head commit (or the owner approved that commit). At L1
   auto-merge must be off, so a person merges, and the approval is enough unless the PR owes proof; then it
-  needs a second key (autonomy#146): every `## Proof owed` item answered by the owner's `## Proof` comment. It reads the tenant's policy repo through Airlock (POST /v1/read): config.yaml, every role's login and this
+  needs a second key (autonomy#146): every `## Proof owed` item answered by the owner's `## Proof` comment. With
+  config.yaml `separation_of_duties: required`, the approval doesn't count when the owner started the run that pushed
+  the commit (the stamp's startedBy) or authored it (lunareng/airlock#84); `recorded`, the default, notes it. It reads the tenant's policy repo through Airlock (POST /v1/read): config.yaml, every role's login and this
   repository's file there, so the caller's workflow must be .github/workflows/autonomy-gate.yml. It re-runs
   the other event's job when the verdict differs, so both autonomy-gate rows agree (autonomy#157).
   The caller job needs permissions contents:read, pull-requests:write, id-token:write and actions:write, and a
@@ -74,23 +76,27 @@ runs:
         echo "state=$state" >> "$GITHUB_OUTPUT"
         if [ "$state" = "APPROVED" ]; then echo "approved=--approved" >> "$GITHUB_OUTPUT"; else echo "approved=" >> "$GITHUB_OUTPUT"; fi
         echo "owner review on $HEAD: ${state:-none}"
-    - name: the PR's Proof owed, the owner's proof comments and auto-merge (the L1 second key, autonomy#146)
+    - name: the PR's Proof owed, the owner's proof comments, auto-merge (the L1 second key, autonomy#146) and the head commit's author
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
         REPO: ${{ github.repository }}
         PR: ${{ github.event.pull_request.number }}
+        HEAD: ${{ github.event.pull_request.head.sha }}
         GATE: ${{ github.action_path }}
       run: |
         # Read live, not from the event: the body, auto-merge and the comments may have changed since it fired.
         # Only the owner's comments and review bodies can carry proof. If a read fails there is no gate-pr.json,
-        # and gate.py fails an approved L1 PR for want of it; no other level reads it.
+        # and gate.py fails an approved L1 PR for want of it; no other level reads it. The head commit is read on its
+        # own: if that read fails, head_author is null, which only separation_of_duties reads (as "can't tell").
         rm -f "$RUNNER_TEMP/gate-pr.json"
         owner="$(python -I -c 'import yaml;print(yaml.safe_load(open("'"$RUNNER_TEMP"'/gate-config.yaml"))["human_owner"].lstrip("@"))')"
         gh api "repos/$REPO/pulls/$PR" > "$RUNNER_TEMP/pr.json" &&
           gh api --paginate --slurp "repos/$REPO/issues/$PR/comments?per_page=100" > "$RUNNER_TEMP/comments.json" &&
           gh api --paginate --slurp "repos/$REPO/pulls/$PR/reviews?per_page=100" > "$RUNNER_TEMP/reviews.json" ||
           { echo "could not read the PR's body, comments or reviews; an approved L1 PR fails without them"; exit 0; }
+        gh api "repos/$REPO/commits/$HEAD" > "$RUNNER_TEMP/head-commit.json" ||
+          { echo "could not read the head commit; its author is unknown"; echo '{}' > "$RUNNER_TEMP/head-commit.json"; }
         OWNER="$owner" python -I - <<'PY' || echo "could not assemble the PR data; an approved L1 PR fails without it"
         import json, os
         t = os.environ["RUNNER_TEMP"]
@@ -98,8 +104,11 @@ runs:
         notes = [c for page in json.load(open(f"{t}/comments.json")) for c in page]
         notes += [r for page in json.load(open(f"{t}/reviews.json")) for r in page]
         proofs = [n.get("body") or "" for n in notes if (n.get("user") or {}).get("login") == os.environ["OWNER"]]
-        json.dump({"body": pr.get("body") or "", "auto_merge": bool(pr.get("auto_merge")), "proofs": proofs}, open(f"{t}/gate-pr.json", "w"))
-        print(f"auto-merge: {'on' if pr.get('auto_merge') else 'off'}; owner comments and reviews: {len(proofs)}")
+        # The login GitHub links to the head commit's author (null when its email links to no account; lunareng/airlock#84).
+        head_author = (json.load(open(f"{t}/head-commit.json")).get("author") or {}).get("login")
+        json.dump({"body": pr.get("body") or "", "auto_merge": bool(pr.get("auto_merge")), "proofs": proofs, "head_author": head_author},
+                  open(f"{t}/gate-pr.json", "w"))
+        print(f"auto-merge: {'on' if pr.get('auto_merge') else 'off'}; owner comments and reviews: {len(proofs)}; head commit author: {head_author or 'no login'}")
         PY
     - name: which role pushed the head (Airlock's stamp; PRs Airlock's App opened only)
       shell: bash
