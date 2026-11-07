@@ -30,10 +30,9 @@ bridge therefore sends no mentions or other writes. A connected person can still
 The bridge uses read-only GitHub API calls, never a checkout of PR code. It verifies both OpenAI's immutable
 GitHub app and bot IDs and reads the observed `codex-review-state:v1` envelope. A pass needs the full current
 40-character head SHA, `completed`, and both finding flags explicitly false. A reaction, prose, short hash,
-resolved thread, missing review kind, older result or unreadable/truncated response is no pass. The newest
-trusted summary wins, including a newer running or failed review. Review-format changes fail closed.
+resolved thread, missing review kind, older result or unreadable/truncated response is no pass. A single authoritative summary is required; ambiguous summaries fail. Its running or failed state never reuses an earlier pass. Review-format changes fail closed.
 
-Code Review also needs its own service-generated Code Review completion timestamp and a trusted completion receipt after the PR body's last edit; the short hash in that
+Code Review needs an authentic receipt and its own completion metadata. For an edited body, authenticated history must also prove a matching Code Review started after that edit; the short hash in that
 receipt establishes freshness only, never identity without the full-SHA state. The current head and body are
 checked before and after polling. A later Security Review cannot freshen an old Code Review through the summary’s shared update timestamp. The `edited` PR event reruns the check; an old intent review waits for a new
 app review. Signal/tool-request delivery markers are checked deterministically before model results count.
@@ -76,3 +75,19 @@ edits and deletion on the default branch, with no PR checkout. The pinned `revie
 immutable app identity, repository and current head, then reruns completed `claude-review` / `claude-security-review`
 rows from the exact adopted workflow. A replacement summary with an old or null head also invalidates the current rows, matching the observer’s refusal rules. Busy rows already poll the state. The handler never writes a passing
 status itself. Its Actions-write token is isolated from model/review jobs, and it never follows an old head.
+
+## Authentic edits and intent
+
+Original comment authorship is insufficient: writers can edit PR comments. The reader checks every OpenAI-bot
+comment against its GraphQL edit metadata and complete edit history. Every editor must be the OpenAI bot; missing,
+deleted or non-OpenAI history refuses the evidence. REST and GraphQL body/version snapshots must agree. A cache
+is keyed by the body, timestamps and edit count, rather than trusting a previously checked comment ID.
+
+Those authenticated historical snapshots also recover Code Review’s own running/start metadata and full SHA.
+A body edited during a review cannot borrow that review’s later completion. After a body edit, push a correction
+or request a new app review; a completed review alone is not evidence that the new intent was read. The observer
+rechecks intent and evidence before returning. A body changed and restored still has a newer edit timestamp.
+
+The result updater retains events while review jobs are busy, waits for completion, then refreshes their rows.
+It does not assume a busy job will fetch the update. Invalidation is conservative for every OpenAI-bot comment
+edit/deletion, even if a receipt header was removed. This only schedules a fresh check; it cannot produce PASS.

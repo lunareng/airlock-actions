@@ -19,16 +19,17 @@ def main():
         p=api.pull(pr)
         if p.get('state')!='open' or p.get('head',{}).get('sha')!=sha or (p.get('body') or '')!=body:
             raise b.Refused('probe head or intent changed')
-    for kind in ['code','security']:
-        end=time.monotonic()+600
-        while True:
-            current();comments=api.comments(pr)
-            result=b.decision(comments,kind,sha,since)
-            if result!='pending' or time.monotonic()>=end:break
-            time.sleep(30)
-        current()
-        print(json.dumps({'probeOnly':True,'kind':kind,'head':sha,'result':result}),flush=True)
-        if result!='pass':raise b.Refused('app did not produce a clean current-head result; inspect repository automation/access')
+    deadline=time.monotonic()+1200
+    while True:
+        current();comments=api.comments(pr)
+        results={kind:b.decision(comments,kind,sha,since['since'],require_start=since['edited']) for kind in ['code','security']}
+        if all(value=='pass' for value in results.values()):break
+        if any(value in ('findings','failed') for value in results.values()) or time.monotonic()>=deadline:
+            print(json.dumps({'probeOnly':True,'head':sha,'results':results}),flush=True)
+            raise b.Refused('app did not produce clean current-head results; inspect review findings/automation/access')
+        time.sleep(min(45,max(0,deadline-time.monotonic())))
+    current()
+    print(json.dumps({'probeOnly':True,'head':sha,'results':results}),flush=True)
     print('App receipts verified. This does not replace current-head human review of this workflow PR.')
 
 if __name__=='__main__':
