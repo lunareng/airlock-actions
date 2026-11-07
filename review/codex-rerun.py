@@ -26,7 +26,7 @@ def update(api, event, rerun, wait_seconds=1200, sleep=time.sleep, clock=time.mo
     runs=api.call('actions/workflows/claude-review.yml/runs?event=pull_request&head_sha='+sha+'&per_page=100')
     entries=runs.get('workflow_runs',[])
     if runs.get('total_count')!=len(entries):raise b.Refused('workflow run list incomplete')
-    matches=[r for r in entries if r.get('head_sha')==sha and r.get('event')=='pull_request' and r.get('path')=='.github/workflows/claude-review.yml']
+    matches=[r for r in entries if r.get('head_sha')==sha and r.get('event')=='pull_request' and r.get('path')=='.github/workflows/claude-review.yml' and len(r.get('pull_requests',[]))==1 and r['pull_requests'][0].get('number')==pr]
     if not matches:return 'no push-time review yet'
     run=max(matches,key=lambda r:r['id'])
     deadline=clock()+wait_seconds
