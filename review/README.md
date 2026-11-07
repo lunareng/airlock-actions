@@ -26,6 +26,8 @@ their existing provider. The model input applies to Claude; the GitHub app choos
 GitHub Actions bot mentions were tested and **rejected** by the app as an unconnected Codex user. The production
 bridge therefore sends no mentions or other writes. A connected person can still request `@codex review` or
 `@codex security review`, for example after editing a PR body without pushing a commit. There is no API-key fallback.
+A role run needs neither: every role that opens PRs is told (`agent/plan.py`) to finish the description before the
+push that starts Code Review, and to push one more commit, empty if nothing else changed, after any later body edit.
 
 ## What counts
 
@@ -103,7 +105,7 @@ Those authenticated historical snapshots also recover Code Review’s own runnin
 That full-head start plus the same review kind’s completion is independent proof when the automatic app
 review posts no standalone receipt; a missing/stale start cannot take this path.
 A body edited during a review cannot borrow that review’s later completion. After a body edit, push a correction
-or request a new app review; a completed review alone is not evidence that the new intent was read. The observer
+or request a new app review (a role run pushes; see above); a completed review alone is not evidence that the new intent was read. The observer
 rechecks intent and evidence before returning. A body changed and restored still has a newer edit timestamp.
 
 The result updater retains events while review jobs are busy, waits for the whole workflow and dependent jobs to finish, then refreshes both reviews with one workflow rerun.
