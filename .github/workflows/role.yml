@@ -139,9 +139,10 @@ jobs:
       - name: airlock (this run's GitHub token, MCP sessions and telemetry)
         id: app
         timeout-minutes: 2
-        # Main at #31, the first commit that sends reason and clock to Mint. It isn't a release: re-pin to the v1.x
-        # tag that contains #31 once one is cut.
-        uses: lunareng/airlock-actions@abf17ca166030d484ac777bd5e78c136e04368da # mint/revoke includes read-only token cleanup
+        # Main at 93f23a8: #31 (sends reason and clock to Mint), the read-only token cleanup, and #52 (mint and revoke
+        # tried again when API Gateway, not Airlock, answered; at most 110 s, inside this step's 2 minutes). It isn't a
+        # release: re-pin to the v1.x tag that contains 93f23a8 once one is cut.
+        uses: lunareng/airlock-actions@93f23a84bc9d46cb3d4280083f18f7096a258cfc # mint/revoke retry on API Gateway 5xx, #52
         with:
           role: ${{ inputs.role }}
           signal: ${{ inputs.signal }}
