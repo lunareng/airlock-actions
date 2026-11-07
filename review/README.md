@@ -28,7 +28,7 @@ bridge therefore sends no mentions or other writes. A connected person can still
 ## What counts
 
 The bridge uses read-only GitHub API calls, never a checkout of PR code. It verifies both OpenAI's immutable
-GitHub app and bot IDs and reads the observed `codex-review-state:v1` envelope. A pass needs the full current
+GitHub app and bot IDs and reads the observed `codex-review-state:v1` envelope. A clean verdict needs the full current
 40-character head SHA, `completed`, and both finding flags explicitly false. A reaction, prose, short hash,
 resolved thread, missing review kind, older result or unreadable/truncated response is no pass. A single authoritative summary is required; ambiguous summaries fail. Its running or failed state never reuses an earlier pass. Review-format changes fail closed.
 
@@ -45,6 +45,16 @@ review. A writer's exact-commit approval can take over. Human Markdown-only PRs 
 Security is a separate typed result, never inferred from Code Review or an absence of posted findings. Its
 findings remain advisory. A missing or failed security review fails the scan step visibly; it never pretends
 that a scan completed. Account access and reporting thresholds are configured in Codex, outside this action.
+
+The observed Security Review v1 can mark a scan completed while both finding flags remain `null`. In that case,
+the authenticated `codex-security-review:v1` envelope must independently match the full head, repository and PR,
+say `completed`, and have its native merge gate off. The result is `completed_findings_unknown`, with a visible
+warning and no clean security verdict. Missing, partial or inconsistent metadata still fails. This exception
+cannot authorize Code Review. The live probe requires clean Code Review plus a completed advisory security scan;
+it prints their separate results, including unavailable security finding counts.
+
+This shape is captured from the real app in `test/review/fixtures/codex-security-null-findings.json`, with invented
+repository, PR and commit identifiers. The code-review finding-flag requirements remain unchanged.
 
 ## Caller
 

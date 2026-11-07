@@ -14,6 +14,7 @@ import time
 APP_ID, BOT_ID = 1144995, 199175422
 SUMMARY = '<!-- codex-pull-request-review-summary -->'
 STATE = re.compile(r'<!-- codex-review-state:v1 (.+) -->')
+SECURITY_STATE = re.compile(r'<!-- codex-security-review:v1 (.+) -->')
 SHA = re.compile(r'[0-9a-f]{40}')
 REPO = re.compile(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+')
 RULES = Path(__file__).with_name('codex-rules.md').read_text()
@@ -69,7 +70,8 @@ def summary_of(comments, kind, sha):
     if not isinstance(state, dict): raise Refused('missing Codex review kind')
     if state.get('commit_sha') != sha: return None
     if state.get('status') == 'completed':
-        if type(state.get('has_any_findings')) is not bool or type(state.get('has_unresolved_findings')) is not bool:
+        null_security = kind == 'security' and all(k in state and state[k] is None for k in ('has_any_findings','has_unresolved_findings'))
+        if not null_security and (type(state.get('has_any_findings')) is not bool or type(state.get('has_unresolved_findings')) is not bool):
             raise Refused('missing Codex finding flags')
     return {'comment': latest, 'state': state}
 
@@ -124,12 +126,30 @@ def code_started_at(found, sha):
         if value and short and sha.startswith(short[1]): starts.append(stamp(value[1]))
     return max(starts) if starts else None
 
-def decision(comments, kind, sha, intent_since, require_start=True):
+def security_scan_only(found, sha, repo, pr):
+    # Observed Security Review v1 can publish a completed scan with null finding
+    # flags. Its separate envelope proves completion, never absence of findings.
+    lines=found['comment']['body'].splitlines()
+    match=SECURITY_STATE.fullmatch(lines[2]) if len(lines)>2 else None
+    if not match: raise Refused('security finding flags unavailable and scan completion unproven')
+    try: scan=strict_json(match[1])
+    except (ValueError,TypeError): raise Refused('invalid security scan metadata') from None
+    if not isinstance(scan,dict) or set(scan)!={'blockingSeverityThreshold','headSha','mergeGateEnabled','pullRequestNumber','repository','status'}:
+        raise Refused('unknown security scan metadata')
+    if not REPO.fullmatch(repo or '') or type(pr) is not int or pr<1 or scan['repository']!=repo or type(scan['pullRequestNumber']) is not int or scan['pullRequestNumber']!=pr or scan['headSha']!=sha:
+        raise Refused('security scan context mismatch')
+    if scan['status']!='completed' or scan['mergeGateEnabled'] is not False or scan['blockingSeverityThreshold'] not in ('P0','P1','P2','P3'):
+        raise Refused('advisory security scan completion unproven')
+    return 'completed_findings_unknown'
+
+def decision(comments, kind, sha, intent_since, require_start=True, repo=None, pr=None):
     found = summary_of(comments, kind, sha)
     if not found: return 'pending'
     state = found['state']
     if state.get('status') in ('failed', 'cancelled', 'error'): return 'failed'
     if state.get('status') != 'completed': return 'pending'
+    if kind=='security' and state['has_any_findings'] is None:
+        return security_scan_only(found,sha,repo,pr)
     if state['has_any_findings'] or state['has_unresolved_findings']: return 'findings'
     if kind == 'code':
         completed = code_completed_at(found, sha)
@@ -331,11 +351,11 @@ def main():
     while True:
         current()
         comments = api.comments(pr)
-        result = decision(comments, kind, sha, intent['since'], require_start=intent['edited'])
+        result = decision(comments, kind, sha, intent['since'], require_start=intent['edited'], repo=repo, pr=pr)
         if result != 'pending' or time.monotonic() >= deadline: break
         time.sleep(min(45, max(0, deadline - time.monotonic())))
     intent = api.intent_time(pr, pull.get('body') or '', sha)
-    result = decision(api.comments(pr), kind, sha, intent['since'], require_start=intent['edited'])
+    result = decision(api.comments(pr), kind, sha, intent['since'], require_start=intent['edited'], repo=repo, pr=pr)
     current()  # Recheck evidence, head and body before returning; update handler also refreshes after completion.
     summary = os.environ.get('GITHUB_STEP_SUMMARY')
     message = f'Codex GitHub app {kind} review: {result}; commit {sha}.'
@@ -347,6 +367,8 @@ def main():
         current();print('PASS: a writer took responsibility for this exact commit.');return 0
     if kind == 'security' and result == 'findings':
         print('::warning::Codex Security reported findings; this scan is advisory.');return 0
+    if kind == 'security' and result == 'completed_findings_unknown':
+        print('::warning::Codex Security scan completed; finding flags are unavailable. Inspect the security report. No clean verdict is claimed.');return 0
     if kind == 'code' and not binding:
         print('::warning::No passing Codex verdict; the person merging this PR is its reviewer.');return 0
     raise Refused('Codex review has no clean, completed verdict on this exact head')
