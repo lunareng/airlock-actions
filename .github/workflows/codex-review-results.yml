@@ -19,4 +19,4 @@ jobs:
     runs-on: ubuntu-latest # public repo: hosted, no self-hosted credentials
     timeout-minutes: 25
     steps:
-      - uses: lunareng/airlock-actions/review/codex-rerun@c2e61aa13c2404971cddf8999c4d6456b4fb38fb # app-bridge source, PR #58
+      - uses: lunareng/airlock-actions/review/codex-rerun@c1bddf8ab2000f1ef25d2b60f0cdac6d767f2c92 # app-bridge source, PR #58
