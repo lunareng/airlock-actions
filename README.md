@@ -94,6 +94,19 @@ jobs:
 | --- | --- |
 | `level` | The PR's level, `L1` to `L4`. |
 | `passed` | `true` or `false` once the level is computed; empty if the gate stopped before. |
+
+### Separation of duties
+
+When your owner's approval is what passes an agent's PR, the gate checks it against who started the run that pushed the head commit (the `startedBy` in Airlock's stamp) and who authored that commit. Set it in your policy repo's `config.yaml`:
+
+```yaml
+separation_of_duties: required   # or recorded, the default
+```
+
+- **`required`:** the approval doesn't count when your owner started that run, authored the commit, or the gate can't tell. It can't tell when the stamp has no `startedBy` (a PR not opened by Airlock's App, a re-run, a run Airlock no longer has) or when GitHub links the commit's author to no account. A commit pushed by a run your owner didn't start (a scheduled run, or one someone else dispatched), then their approval of it, passes.
+- **`recorded`:** the approval counts, and the job summary says when the approver also started the run or authored the commit, or when the gate couldn't tell.
+- Any other value fails the gate, with no level, so a typo can't turn `required` into `recorded`.
+
 ## Floors
 
 A floor is the loosest level something may ever be, whatever a repository's policy says. The gate and validate both read yours from `floors:` in your policy repo's `config.yaml`:
