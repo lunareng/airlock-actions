@@ -38,7 +38,8 @@ Code Review needs its own authenticated completion metadata and freshness proof.
 Code Review start recovered from authenticated history can establish freshness without a standalone receipt
 comment; automatic reviews can omit that extra comment. If no such start is available, an unedited body can
 use the existing fresh-receipt path. For an edited body, authenticated history must always prove a matching
-Code Review started after that edit. A receipt’s short hash never establishes identity without the full-SHA state. The current head and body are
+Code Review started after that edit. GitHub reports body edits at whole-second precision, so a start in
+that same second is refused as ambiguous, even with a later receipt. A receipt’s short hash never establishes identity without the full-SHA state. The current head and body are
 checked before and after polling. A later Security Review cannot freshen an old Code Review through the summary’s shared update timestamp. The `edited` PR event reruns the check; an old intent review waits for a new
 app review. Signal/tool-request delivery markers are checked deterministically before model results count.
 
