@@ -25,7 +25,7 @@ def main():
             current();comments=api.comments(pr)
             result=b.decision(comments,kind,sha,since)
             if result!='pending' or time.monotonic()>=end:break
-            time.sleep(5)
+            time.sleep(30)
         current()
         print(json.dumps({'probeOnly':True,'kind':kind,'head':sha,'result':result}),flush=True)
         if result!='pass':raise b.Refused('app did not produce a clean current-head result; inspect repository automation/access')

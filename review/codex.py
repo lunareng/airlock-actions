@@ -174,13 +174,13 @@ class GitHub:
         except (OSError, subprocess.TimeoutExpired): return False
         return r.returncode == 0
 
-def signal_problem(pull, api):
+def signal_problem(pull, api, binding=False):
     body = pull.get('body') or ''
     section = re.search(r'^## Signal\s*\n(.*?)(?=^## |\Z)', body, re.M | re.S)
     if not section or not re.sub(r'<!--.*?-->', '', section[1], flags=re.S).strip(): return 'missing nonempty ## Signal'
     # The app still reviews the meaning, intent, proof and floors. This deterministic part cannot be waived by a receipt.
     links = set(re.findall(r'https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/issues/([1-9][0-9]*)', section[1]))
-    if not (pull.get('user') or {}).get('login', '').endswith('[bot]'): return None
+    if not binding and not (pull.get('user') or {}).get('login', '').endswith('[bot]'): return None
     for repo, number in links:
         issue = GitHub(repo).call(f'issues/{number}') if api is None else api(repo, number)
         if issue.get('state') != 'open' or not any(x.get('name') == 'tool-request' for x in issue.get('labels', [])): continue
@@ -208,18 +208,19 @@ def main():
     author = pull.get('user', {}).get('login')
     if not isinstance(author, str): raise Refused('PR author unavailable')
     binding = agent(author, os.environ.get('AGENTS', '*[bot]'))
+    machine = binding or author.endswith('[bot]')
     paths = api.files(pr, pull.get('changed_files'))
     if protected(paths):
         current()
-        if author.endswith('[bot]') and not api.approved(pr, sha): raise Refused('workflow or review-rule change requires a human approval on this commit')
+        if machine and not api.approved(pr, sha): raise Refused('workflow or review-rule change requires a human approval on this commit')
         current()
         print('No model verdict: workflow/review-rule change; its human reviewer owns this commit.')
         return 0
-    if not author.endswith('[bot]') and paths and all(p.endswith('.md') for p in paths):
+    if not machine and paths and all(p.endswith('.md') for p in paths):
         current();print('PASS: Markdown-only PR by a person; its merger is its reviewer.');return 0
     if kind == 'code' and binding and api.approved(pr, sha):
         current();print('PASS: a writer approved this exact commit.');return 0
-    problem = signal_problem(pull, None) if kind == 'code' else None
+    problem = signal_problem(pull, None, binding) if kind == 'code' else None
     if problem:
         current();print(('::error::' if binding else '::warning::') + problem)
         if binding: return 1
@@ -231,7 +232,7 @@ def main():
         comments = api.comments(pr)
         result = decision(comments, kind, sha, intent_since)
         if result != 'pending' or time.monotonic() >= deadline: break
-        time.sleep(min(5, max(0, deadline - time.monotonic())))
+        time.sleep(min(30, max(0, deadline - time.monotonic())))
     current()  # Never write an old head's result after polling or a last-moment push.
     summary = os.environ.get('GITHUB_STEP_SUMMARY')
     message = f'Codex GitHub app {kind} review: {result}; commit {sha}.'
