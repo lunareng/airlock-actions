@@ -24,7 +24,7 @@ jobs:
     runs-on: ubuntu-latest # a public repository: GitHub-hosted runners, free, and the self-hosted pools take no public repositories
     timeout-minutes: 20
     steps:
-      - uses: lunareng/airlock-actions/review@3446f8adc56c06d7529a40a1df1f16bdb42e5f89 # reviewed app-bridge source, PR #58
+      - uses: lunareng/airlock-actions/review@17101c91ce2225e90be57bb875ffbbe20348c936 # reviewed app-bridge source, PR #58
         with:
           provider: ${{ vars.AIRLOCK_REVIEW_PROVIDER || vars.AIRLOCK_AGENT_PROVIDER || 'claude' }}
           claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -36,7 +36,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: lunareng/airlock-actions/review/security@3446f8adc56c06d7529a40a1df1f16bdb42e5f89 # reviewed app-bridge source, PR #58
+      - uses: lunareng/airlock-actions/review/security@17101c91ce2225e90be57bb875ffbbe20348c936 # reviewed app-bridge source, PR #58
         with:
           provider: ${{ vars.AIRLOCK_REVIEW_PROVIDER || vars.AIRLOCK_AGENT_PROVIDER || 'claude' }}
           claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -52,6 +52,6 @@ jobs:
       actions: write
       pull-requests: read
     steps:
-      - uses: lunareng/airlock-actions/review/rerun@3446f8adc56c06d7529a40a1df1f16bdb42e5f89 # reviewed app-bridge source, PR #58
+      - uses: lunareng/airlock-actions/review/rerun@17101c91ce2225e90be57bb875ffbbe20348c936 # reviewed app-bridge source, PR #58
         with:
           passed: ${{ needs.review.result == 'success' }}
