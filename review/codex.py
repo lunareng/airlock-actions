@@ -154,12 +154,15 @@ def decision(comments, kind, sha, intent_since, require_start=True, repo=None, p
     if kind == 'code':
         completed = code_completed_at(found, sha)
         started = code_started_at(found, sha)
+        # GitHub body-edit times have whole-second precision. A start inside
+        # that same second cannot prove it followed the edit.
+        fresh_start = started is not None and started >= intent_since + (1 if require_start else 0)
         if completed < intent_since: return 'pending'
         if started is not None and started > completed: return 'pending'
-        if require_start and (started is None or started < intent_since): return 'pending'
+        if require_start and not fresh_start: return 'pending'
         # Automatic reviews may omit the standalone receipt. A full-head running
         # snapshot authenticated through edit history proves freshness directly.
-        if not fresh_receipt(comments, sha, intent_since) and (started is None or started < intent_since): return 'pending'
+        if not fresh_receipt(comments, sha, intent_since) and not fresh_start: return 'pending'
     return 'pass'
 
 def agent(login, pattern):

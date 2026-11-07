@@ -113,6 +113,16 @@ class Refusals(unittest.TestCase):
         c,since=self.automatic_without_receipt()
         c['body']=c['body'].replace('"has_any_findings":false','"has_any_findings":true',1)
         self.assertEqual('findings',m.decision([c],'code',SHA,since,require_start=True))
+    def test_an_edited_body_start_in_the_same_timestamp_second_is_ambiguous(self):
+        clean=summary();running=summary(status='running',code_time='2026-01-01T00:00:00.500000Z')
+        running['body']=running['body'].replace('✅ **Completed**','🔄 **Running** since')
+        clean['_review_versions']=[{'body':running['body'],'at':NOW}]
+        # GitHub's body-edit timestamp has whole seconds; this start could precede
+        # an edit later in that same second. A fresh generic receipt cannot fix it.
+        for evidence in [[clean],[clean,receipt()]]:
+            self.assertEqual('pending',m.decision(evidence,'code',SHA,m.stamp(NOW),require_start=True))
+        clean['_review_versions'][0]['body']=running['body'].replace('00:00:00.500000Z','00:00:01Z')
+        self.assertEqual('pass',m.decision([clean],'code',SHA,m.stamp(NOW),require_start=True))
     def test_a_newer_review_start_cannot_borrow_an_older_completion(self):
         clean=summary();running=summary(status='running',code_time='2026-01-01T00:02:00Z')
         running['body']=running['body'].replace('✅ **Completed**','🔄 **Running** since')
