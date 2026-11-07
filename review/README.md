@@ -91,3 +91,5 @@ rechecks intent and evidence before returning. A body changed and restored still
 The result updater retains events while review jobs are busy, waits for the whole workflow and dependent jobs to finish, then refreshes both reviews with one workflow rerun.
 It does not assume a busy job will fetch the update. Invalidation is conservative for every OpenAI-bot comment
 edit/deletion, even if a receipt header was removed. This only schedules a fresh check; it cannot produce PASS.
+
+Refresh concurrency belongs to the app-filtered job, not the workflow: an ordinary PR comment cannot cancel an in-flight receipt invalidation.

@@ -234,6 +234,15 @@ class Lifecycle(unittest.TestCase):
         self.assertEqual(0,self.run_main(protected_value=True,approved_value=True))
 
 class Routing(unittest.TestCase):
+    def test_unrelated_comment_runs_cannot_cancel_a_filtered_app_refresh(self):
+        for relative in ['adopt/templates/codex-review-results.yml','.github/workflows/codex-review-results.yml']:
+            workflow=yaml.safe_load((ROOT/relative).read_text())
+            self.assertNotIn('concurrency',workflow,'unfiltered workflow events must not cancel the trusted job')
+            job=workflow['jobs']['refresh']
+            self.assertIn('github.event.comment.user.id == 199175422',job['if'])
+            self.assertIn('github.event.issue.pull_request',job['if'])
+            self.assertIn('github.event.issue.number',job['concurrency']['group'])
+            self.assertTrue(job['concurrency']['cancel-in-progress'])
     def test_codex_never_checks_out_or_executes_the_pr_or_requires_claude_secret(self):
         for relative in ['review/action.yml','review/security/action.yml']:
             a=yaml.safe_load((ROOT/relative).read_text())
