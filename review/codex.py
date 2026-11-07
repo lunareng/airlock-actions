@@ -31,11 +31,18 @@ def strict_json(text):
     def constant(_): raise ValueError('non-JSON number')
     return json.loads(text, object_pairs_hook=pairs, parse_constant=constant)
 
+def source_bot(comment):
+    user=comment.get('user') or {}
+    return user.get('type')=='Bot' and user.get('id')==BOT_ID and user.get('login')=='chatgpt-codex-connector[bot]'
+
+def origin(comment):
+    return source_bot(comment) and (comment.get('performed_via_github_app') or {}).get('id')==APP_ID
+
 def trusted(comment):
-    user = comment.get('user') or {}
-    app = comment.get('performed_via_github_app') or {}
-    return (user.get('type') == 'Bot' and user.get('id') == BOT_ID and
-            user.get('login') == 'chatgpt-codex-connector[bot]' and app.get('id') == APP_ID)
+    return origin(comment) and comment.get('_history_verified') is True
+
+class ReviewChanged(Refused):
+    pass
 
 def stamp(text):
     try:
@@ -46,9 +53,11 @@ def stamp(text):
         raise Refused('unreadable review timestamp') from None
 
 def summary_of(comments, kind, sha):
-    summaries = [c for c in comments if trusted(c) and isinstance(c.get('body'), str) and c['body'].splitlines()[:1] == [SUMMARY]]
+    summaries = [c for c in comments if origin(c) and isinstance(c.get('body'), str) and c['body'].splitlines()[:1] == [SUMMARY]]
     if not summaries: return None
-    latest = max(summaries, key=lambda c: (stamp(c.get('updated_at')), c.get('id', 0)))
+    if len(summaries) != 1: raise Refused('ambiguous Codex summaries')
+    latest = summaries[0]
+    if not trusted(latest): raise Refused('Codex summary edit history is untrusted')
     lines = latest['body'].splitlines()
     if len(lines) < 2 or len(latest['body']) > 65536: raise Refused('unreadable Codex summary')
     match = STATE.fullmatch(lines[1])
@@ -101,25 +110,45 @@ def code_completed_at(found, sha):
     if not value or not short or not sha.startswith(short[1]): raise Refused('Code Review completion metadata invalid')
     return stamp(value[1])
 
-def decision(comments, kind, sha, intent_since):
+def code_started_at(found, sha):
+    starts=[]
+    for version in found['comment'].get('_review_versions', []):
+        snapshot={**found['comment'], 'body':version['body'], 'updated_at':version['at'], '_review_versions':[]}
+        prior=summary_of([snapshot], 'code', sha)
+        if not prior or prior['state'].get('status')!='running': continue
+        rows=[[c.strip() for c in line.split('|')] for line in version['body'].splitlines()]
+        rows=[c for c in rows if len(c)==6 and c[1]=='📝 **Code Review**']
+        if len(rows)!=1: continue
+        value=re.fullmatch(r'🔄 \*\*Running\*\* since <relative-time datetime="([^"]+)">[^<]*</relative-time>',rows[0][2])
+        short=re.fullmatch(r'`([0-9a-f]{7,40})`', rows[0][3])
+        if value and short and sha.startswith(short[1]): starts.append(stamp(value[1]))
+    return max(starts) if starts else None
+
+def decision(comments, kind, sha, intent_since, require_start=True):
     found = summary_of(comments, kind, sha)
     if not found: return 'pending'
     state = found['state']
     if state.get('status') in ('failed', 'cancelled', 'error'): return 'failed'
     if state.get('status') != 'completed': return 'pending'
     if state['has_any_findings'] or state['has_unresolved_findings']: return 'findings'
-    if kind == 'code' and (code_completed_at(found, sha) < intent_since or not fresh_receipt(comments, sha, intent_since)):
-        return 'pending'
+    if kind == 'code':
+        completed = code_completed_at(found, sha)
+        started = code_started_at(found, sha)
+        if completed < intent_since or not fresh_receipt(comments, sha, intent_since): return 'pending'
+        if started is not None and started > completed: return 'pending'
+        if require_start and (started is None or started < intent_since): return 'pending'
     return 'pass'
 
 def agent(login, pattern):
-    return re.fullmatch(re.escape(pattern).replace(r'\*', '.*'), login) is not None
+    return re.fullmatch(re.escape(pattern).replace(r'\*', '.*'), login, re.I) is not None
 
 def protected(files):
     return any(p.startswith('.github/workflows/') or p.split('/')[-1] == 'AGENTS.md' for p in files)
 
 class GitHub:
-    def __init__(self, repo): self.root = 'repos/' + repo
+    def __init__(self, repo):
+        self.root = 'repos/' + repo
+        self._history_cache = {}
     def call(self, path, pages=False):
         args = ['gh', 'api', '--method', 'GET', self.root + '/' + path]
         if pages: args += ['--paginate', '--slurp']
@@ -155,10 +184,70 @@ class GitHub:
             if r.returncode: raise ValueError()
             value = strict_json(r.stdout)['data']['repository']['pullRequest']
             if value['body'] != body or value['headRefOid'] != sha: raise Refused('PR head or intent changed')
-            return stamp(value.get('lastEditedAt') or value['createdAt'])
+            return {'since':stamp(value.get('lastEditedAt') or value['createdAt']), 'edited':value.get('lastEditedAt') is not None}
         except (ValueError, KeyError, TypeError, OSError, subprocess.TimeoutExpired): raise Refused('PR intent timestamp unavailable') from None
     def pull(self, pr): return self.call(f'pulls/{pr}')
-    def comments(self, pr): return self.call(f'issues/{pr}/comments?per_page=100', pages=True)
+    def graphql(self, query, variables):
+        try:
+            r = subprocess.run(['gh','api','graphql','--input','-'], input=json.dumps({'query':query,'variables':variables}), capture_output=True,text=True,timeout=30)
+            if r.returncode or len(r.stdout)>15000000: raise ValueError()
+            result=strict_json(r.stdout)
+            if result.get('errors'): raise ValueError()
+            return result['data']
+        except (ValueError,KeyError,OSError,subprocess.TimeoutExpired): raise Refused('comment edit history unavailable') from None
+    def _comment_evidence(self, raw):
+        app=[c for c in raw if source_bot(c)]
+        if any(not origin(c) for c in app):raise Refused('OpenAI bot comment app identity unavailable')
+        if len(app)>1000: raise Refused('app comment limit exceeded')
+        for offset in range(0,len(app),50):
+            chunk=app[offset:offset+50]
+            ids=[c.get('node_id') for c in chunk]
+            if any(not isinstance(i,str) for i in ids): raise Refused('comment identity unavailable')
+            query='query($ids:[ID!]!){nodes(ids:$ids){... on IssueComment{id body updatedAt lastEditedAt editor{__typename ... on Bot{databaseId}} userContentEdits(first:1){totalCount}}}}'
+            nodes=self.graphql(query,{'ids':ids})['nodes']
+            if len(nodes)!=len(chunk): raise Refused('incomplete comment metadata')
+            for c,node in zip(chunk,nodes):
+                if not node or node.get('id')!=c['node_id'] or node.get('body')!=c['body'] or stamp(node['updatedAt'])!=stamp(c['updated_at']):
+                    raise ReviewChanged('app comment changed while validating')
+                count=node['userContentEdits']['totalCount']
+                if type(count) is not int or not 0<=count<=1000: raise Refused('comment history limit exceeded')
+                key=(node['id'],node['updatedAt'],node['lastEditedAt'],count,hashlib.sha256(node['body'].encode()).hexdigest())
+                if key in self._history_cache:
+                    c['_review_versions']=self._history_cache[key];c['_history_verified']=True;continue
+                versions=[]
+                if count:
+                    editor=node.get('editor') or {}
+                    if editor.get('__typename')!='Bot' or editor.get('databaseId')!=BOT_ID: raise Refused('app comment edited outside OpenAI')
+                    cursor=None
+                    while True:
+                        q='query($id:ID!,$cursor:String){node(id:$id){... on IssueComment{userContentEdits(first:100,after:$cursor){totalCount nodes{diff editedAt editor{__typename ... on Bot{databaseId}}} pageInfo{hasNextPage endCursor}}}}}'
+                        history=self.graphql(q,{'id':node['id'],'cursor':cursor})['node']['userContentEdits']
+                        if history['totalCount']!=count: raise ReviewChanged('app comment history changed')
+                        for edit in history['nodes']:
+                            editor=edit.get('editor') or {}
+                            if editor.get('__typename')!='Bot' or editor.get('databaseId')!=BOT_ID or not isinstance(edit.get('diff'),str):
+                                raise Refused('app comment history contains a non-OpenAI or unreadable edit')
+                            stamp(edit['editedAt'])
+                            versions.append({'body':edit['diff'],'at':edit['editedAt']})
+                        if len(versions)>1000: raise Refused('comment history limit exceeded')
+                        page=history['pageInfo']
+                        if not page['hasNextPage']:break
+                        if not page.get('endCursor') or page['endCursor']==cursor:raise Refused('comment history incomplete')
+                        cursor=page['endCursor']
+                    if len(versions)!=count or not versions or versions[0]['body']!=node['body'] or stamp(versions[0]['at'])!=stamp(node['lastEditedAt']):
+                        raise ReviewChanged('app comment changed while validating history')
+                elif node.get('lastEditedAt') is not None or node.get('editor') is not None:
+                    raise Refused('comment edit metadata inconsistent')
+                c['_review_versions']=versions;c['_history_verified']=True;self._history_cache[key]=versions
+        return raw
+    def comments(self, pr):
+        for _ in range(2):
+            raw=self.call(f'issues/{pr}/comments?per_page=100',pages=True)
+            # Never accept a verification flag from a transport response.
+            for c in raw:c['_history_verified']=False;c['_review_versions']=[]
+            try:return self._comment_evidence(raw)
+            except ReviewChanged:continue
+        raise Refused('app comment did not stabilize')
     def files(self, pr, count):
         entries = self.call(f'pulls/{pr}/files?per_page=100', pages=True)
         if len(entries) != count or count > 3000: raise Refused('PR paths are incomplete')
@@ -169,10 +258,22 @@ class GitHub:
             if f.get('previous_filename'): paths.append(f['previous_filename'])
         return paths
     def approved(self, pr, sha):
-        env = {**os.environ, 'REPO': self.root[6:], 'PR': str(pr), 'SHA': sha}
-        try: r = subprocess.run(['bash', str(Path(__file__).with_name('approved.sh'))], env=env, capture_output=True, timeout=60)
-        except (OSError, subprocess.TimeoutExpired): return False
-        return r.returncode == 0
+        # Configured service identities are machines even when GitHub calls them User.
+        try:
+            reviews=self.call(f'pulls/{pr}/reviews?per_page=100',pages=True)
+            latest={}
+            for r in sorted(reviews,key=lambda x:(x.get('submitted_at') or '',x.get('id',0))):
+                user=r.get('user') or {};login=user.get('login')
+                if not isinstance(login,str) or user.get('type')!='User' or login.lower().endswith('[bot]') or agent(login,os.environ.get('AGENTS','*[bot]')):continue
+                if r.get('state') in ('APPROVED','CHANGES_REQUESTED','DISMISSED'):latest[login]=r
+            approved=False
+            for login,r in latest.items():
+                permission=self.call('collaborators/'+login+'/permission').get('permission')
+                if permission not in ('admin','maintain','write'):continue
+                if r['state']=='CHANGES_REQUESTED':return False
+                if r['state']=='APPROVED' and r.get('commit_id')==sha:approved=True
+            return approved
+        except Refused:return False
 
 def signal_problem(pull, api, binding=False):
     body = pull.get('body') or ''
@@ -208,7 +309,7 @@ def main():
     author = pull.get('user', {}).get('login')
     if not isinstance(author, str): raise Refused('PR author unavailable')
     binding = agent(author, os.environ.get('AGENTS', '*[bot]'))
-    machine = binding or author.endswith('[bot]')
+    machine = binding or author.endswith('[bot]') or pull.get('user',{}).get('type')=='Bot'
     paths = api.files(pr, pull.get('changed_files'))
     if protected(paths):
         current()
@@ -225,15 +326,17 @@ def main():
         current();print(('::error::' if binding else '::warning::') + problem)
         if binding: return 1
     api.review_rules(pull.get('base', {}).get('sha'))
-    intent_since = api.intent_time(pr, pull.get('body') or '', sha)
+    intent = api.intent_time(pr, pull.get('body') or '', sha)
     deadline = time.monotonic() + int(wait)
     while True:
         current()
         comments = api.comments(pr)
-        result = decision(comments, kind, sha, intent_since)
+        result = decision(comments, kind, sha, intent['since'], require_start=intent['edited'])
         if result != 'pending' or time.monotonic() >= deadline: break
-        time.sleep(min(30, max(0, deadline - time.monotonic())))
-    current()  # Never write an old head's result after polling or a last-moment push.
+        time.sleep(min(45, max(0, deadline - time.monotonic())))
+    intent = api.intent_time(pr, pull.get('body') or '', sha)
+    result = decision(api.comments(pr), kind, sha, intent['since'], require_start=intent['edited'])
+    current()  # Recheck evidence, head and body before returning; update handler also refreshes after completion.
     summary = os.environ.get('GITHUB_STEP_SUMMARY')
     message = f'Codex GitHub app {kind} review: {result}; commit {sha}.'
     if summary:

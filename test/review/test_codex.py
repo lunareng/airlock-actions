@@ -17,7 +17,7 @@ SHA, OLD = 'a'*40, 'b'*40
 NOW, LATER = '2026-01-01T00:00:00Z', '2026-01-01T00:01:00Z'
 
 def comment(body, actions=False, id=1, created=NOW, updated=None):
-    return {'id':id,'body':body,'created_at':created,'updated_at':updated or created,
+    return {'_history_verified':True,'_review_versions':[],'id':id,'body':body,'created_at':created,'updated_at':updated or created,
             'user':{'id':41898282 if actions else 199175422,'login':'github-actions[bot]' if actions else 'chatgpt-codex-connector[bot]','type':'Bot'},
             'performed_via_github_app':{'id':15368 if actions else 1144995}}
 
@@ -32,7 +32,7 @@ def receipt(sha=SHA[:10], created=LATER):
 
 
 class Refusals(unittest.TestCase):
-    def result(self, comments, kind='code'):return m.decision(comments,kind,SHA,m.stamp(NOW))
+    def result(self, comments, kind='code'):return m.decision(comments,kind,SHA,m.stamp(NOW),require_start=False)
     def test_full_app_receipt_passes_and_short_sha_alone_never_does(self):
         self.assertEqual('pass',self.result([summary(),receipt()]))
         self.assertEqual('pending',self.result([receipt()]))
@@ -65,9 +65,9 @@ class Refusals(unittest.TestCase):
             self.assertEqual('pending',self.result([summary(status=status),receipt()]))
         self.assertEqual('failed',self.result([summary(status='failed'),receipt()]))
         newer=summary(status='running',updated='2026-01-01T00:02:00Z',id=4)
-        self.assertEqual('pending',self.result([summary(),receipt(),newer]))
+        with self.assertRaises(m.Refused):self.result([summary(),receipt(),newer])
         newer=summary(sha=OLD,updated='2026-01-01T00:02:00Z',id=4)
-        self.assertEqual('pending',self.result([summary(),receipt(),newer]))
+        with self.assertRaises(m.Refused):self.result([summary(),receipt(),newer])
     def test_old_completed_review_does_not_satisfy_new_rubric_request(self):
         self.assertEqual('pending',self.result([summary(updated='2025-12-31T23:59:59Z',code_time='2025-12-31T23:59:59Z'),receipt()]))
         self.assertEqual('pending',self.result([summary(),receipt(created='2025-12-31T23:59:59Z')]))
@@ -78,6 +78,27 @@ class Refusals(unittest.TestCase):
         self.assertEqual('pending',self.result([summary(updated=LATER,code_time=old),receipt(created=LATER)]))
         missing=summary();missing['body']=missing['body'].split('\n|')[0]
         with self.assertRaises(m.Refused):self.result([missing,receipt()])
+    def test_edited_intent_requires_an_authenticated_start_after_the_edit(self):
+        clean=summary();fresh=receipt()
+        self.assertEqual('pending',m.decision([clean,fresh],'code',SHA,m.stamp(NOW),require_start=True))
+        running=summary(status='running',code_time=LATER)
+        # Historical API snapshots carry the per-kind started time and full head binding.
+        running['body']=running['body'].replace('✅ **Completed**','🔄 **Running** since')
+        clean['_review_versions']=[{'body':running['body'],'at':LATER}]
+        self.assertEqual('pass',m.decision([clean,fresh],'code',SHA,m.stamp(NOW),require_start=True))
+        self.assertEqual('pending',m.decision([clean,fresh],'code',SHA,m.stamp('2026-01-01T00:02:00Z'),require_start=True))
+        old_start=running['body'].replace(LATER,NOW)
+        clean['_review_versions']=[{'body':old_start,'at':NOW}]
+        # The body changed during review: completion/receipt are fresh but the reviewed input was old.
+        self.assertEqual('pending',m.decision([clean,fresh],'code',SHA,m.stamp('2026-01-01T00:00:30Z'),require_start=True))
+    def test_a_newer_review_start_cannot_borrow_an_older_completion(self):
+        clean=summary();running=summary(status='running',code_time='2026-01-01T00:02:00Z')
+        running['body']=running['body'].replace('✅ **Completed**','🔄 **Running** since')
+        clean['_review_versions']=[{'body':running['body'],'at':'2026-01-01T00:02:00Z'}]
+        self.assertEqual('pending',self.result([clean,receipt()]))
+    def test_unverified_edits_cannot_authorize_a_summary(self):
+        c=summary();c['_history_verified']=False
+        with self.assertRaises(m.Refused):self.result([c,receipt()])
     def test_security_never_borrows_code_or_absence_of_findings_as_completion(self):
         self.assertEqual('pending',self.result([summary(),receipt()],kind='security'))
         self.assertEqual('pass',self.result([summary(kind='security')],kind='security'))
@@ -116,9 +137,30 @@ class Refusals(unittest.TestCase):
         p['body']=p['body'].replace('Part of acme/tools#7','Part of acme/tools#70')
         self.assertIsNotNone(m.signal_problem(p,get))
 
+class Approvals(unittest.TestCase):
+    def test_configured_service_and_bot_reviews_are_not_human_approvals(self):
+        api=m.GitHub('acme/project')
+        for login,kind in [('worker-service','User'),('Worker-Service','User'),('other-bot','Bot')]:
+            review={'id':1,'user':{'login':login,'type':kind},'state':'APPROVED','commit_id':SHA}
+            with patch.dict(os.environ,{'AGENTS':'worker-*'}),patch.object(api,'call',return_value=[review]):
+                self.assertFalse(api.approved(7,SHA))
+    def test_exact_head_writer_approval_and_latest_changes_requested(self):
+        api=m.GitHub('acme/project')
+        owner={'id':1,'user':{'login':'owner','type':'User'},'state':'APPROVED','commit_id':SHA,'submitted_at':NOW}
+        def call(path,pages=False):
+            if path.startswith('pulls/'):return reviews
+            return {'permission':permission}
+        reviews=[owner];permission='write'
+        with patch.dict(os.environ,{'AGENTS':'worker-*'}),patch.object(api,'call',call):
+            self.assertTrue(api.approved(7,SHA))
+            self.assertFalse(api.approved(7,OLD))
+            permission='read';self.assertFalse(api.approved(7,SHA));permission='write'
+            reviews.append({**owner,'id':2,'state':'CHANGES_REQUESTED','submitted_at':LATER})
+            self.assertFalse(api.approved(7,SHA))
+
 class FakeGitHub:
-    moved=False;body_changed=False;missing_rules=False;approved_value=False;protected_value=False;markdown=False;reads=0;agent_pattern='acme-*[bot]';result='pass';author='acme-worker[bot]'
-    def __init__(self,repo):self.pulls=0
+    moved=False;body_changed=False;intent_changed=False;missing_rules=False;approved_value=False;protected_value=False;markdown=False;reads=0;agent_pattern='acme-*[bot]';result='pass';author='acme-worker[bot]'
+    def __init__(self,repo):self.pulls=0;self.intent_reads=0
     def pull(self,pr):
         self.pulls+=1;FakeGitHub.reads+=1
         return {'state':'open','head':{'sha':OLD if self.moved and self.pulls>=3 else SHA},'changed_files':1,'base':{'sha':'c'*40},
@@ -126,12 +168,35 @@ class FakeGitHub:
     def files(self,*_):return ['.github/workflows/test.yml'] if self.protected_value else (['README.md'] if self.markdown else ['src/main.py'])
     def approved(self,*_):return self.approved_value
     def comments(self,*_):
-        FakeGitHub.reads+=1
+        FakeGitHub.reads+=2
         return [] if self.result=='pending' else [summary(any=self.result=='findings'),receipt()]
     def review_rules(self,sha):
         if self.missing_rules:raise m.Refused('base rules missing')
-    def intent_time(self,*_):return m.stamp(NOW)
+    def intent_time(self,*_):
+        self.intent_reads+=1
+        return {'since':m.stamp('2026-01-01T00:00:30Z') if self.intent_changed and self.intent_reads>1 else m.stamp(NOW),'edited':self.intent_changed and self.intent_reads>1}
     def call(self,*_):raise AssertionError('Observer must never make unexpected writes')
+
+class EditHistory(unittest.TestCase):
+    def test_every_editor_must_be_the_app_even_if_the_latest_edit_is_legitimate(self):
+        c=summary();c['node_id']='IC_test';c['updated_at']=LATER
+        bot={'__typename':'Bot','databaseId':199175422}
+        node={'id':'IC_test','body':c['body'],'updatedAt':LATER,'lastEditedAt':LATER,'editor':bot,'userContentEdits':{'totalCount':2}}
+        edits=[{'diff':c['body'],'editedAt':LATER,'editor':bot},{'diff':c['body'],'editedAt':NOW,'editor':{'__typename':'User'}}]
+        api=m.GitHub('acme/project')
+        def query(q,variables):
+            if 'nodes(ids' in q:return {'nodes':[node]}
+            return {'node':{'userContentEdits':{'totalCount':2,'nodes':edits,'pageInfo':{'hasNextPage':False,'endCursor':None}}}}
+        with patch.object(api,'graphql',query),self.assertRaisesRegex(m.Refused,'non-OpenAI'):api._comment_evidence([c])
+        edits[1]['editor']=bot
+        with patch.object(api,'graphql',query):verified=api._comment_evidence([c])
+        self.assertTrue(verified[0]['_history_verified'])
+        self.assertEqual(2,len(verified[0]['_review_versions']))
+    def test_edited_body_cannot_be_matched_to_a_different_rest_snapshot(self):
+        c=summary();c['node_id']='IC_test'
+        node={'id':'IC_test','body':'altered','updatedAt':LATER}
+        api=m.GitHub('acme/project')
+        with patch.object(api,'graphql',return_value={'nodes':[node]}),self.assertRaises(m.ReviewChanged):api._comment_evidence([c])
 
 class Lifecycle(unittest.TestCase):
     def run_main(self,wait="0",**kwargs):
@@ -145,6 +210,8 @@ class Lifecycle(unittest.TestCase):
         with self.assertRaisesRegex(m.Refused,'head moved'):self.run_main(moved=True)
     def test_unreviewed_missing_rules_cannot_be_waived_by_a_clean_model_receipt(self):
         with self.assertRaisesRegex(m.Refused,'base rules'):self.run_main(missing_rules=True)
+    def test_edit_and_restore_cannot_hide_a_new_intent_timestamp(self):
+        with self.assertRaises(m.Refused):self.run_main(intent_changed=True)
     def test_body_changes_cannot_reuse_an_intent_review(self):
         with self.assertRaisesRegex(m.Refused,'body changed'):self.run_main(body_changed=True)
     def test_agent_findings_block_and_human_responsibility_is_preserved(self):
@@ -198,7 +265,10 @@ class Updates(unittest.TestCase):
         api=API();calls=[]
         event={'comment':summary(),'issue':{'number':7,'pull_request':{'url':'https://api.github.com/repos/acme/project/pulls/7'}}}
         u.update(api,event,calls.append);self.assertEqual([10,11],calls)
-        calls.clear();api.busy=True;u.update(api,event,calls.append);self.assertEqual([11],calls);calls.clear()
+        calls.clear();api.busy=True
+        with self.assertRaises(u.b.Refused):u.update(api,event,calls.append,wait_seconds=0)
+        self.assertEqual([],calls)
+        u.update(api,event,calls.append,sleep=lambda _:setattr(api,'busy',False));self.assertEqual([10,11],calls);calls.clear()
         api.busy=False;api.moved=True;u.update(api,event,calls.append);self.assertEqual([],calls)
         api.moved=False;api.old_run=True;u.update(api,event,calls.append);self.assertEqual([],calls)
     def test_old_or_null_replacement_still_invalidates_current_head_rows(self):
@@ -221,8 +291,13 @@ class Updates(unittest.TestCase):
                 return {'total_count':2,'jobs':[{'id':10,'name':'claude-review','status':'completed'}, {'id':11,'name':'claude-security-review','status':'completed'}]}
         calls=[];event={'action':'deleted','comment':summary(kind='security'),'issue':{'number':7,'pull_request':{'url':'example'}}}
         u.update(API(),event,calls.append);self.assertEqual([10,11],calls)
-        calls.clear();event['comment']=receipt();u.update(API(),event,calls.append);self.assertEqual([10],calls)
-        calls.clear();event['comment']['performed_via_github_app']['id']=42
+        calls.clear();event['comment']=receipt();u.update(API(),event,calls.append);self.assertEqual([10,11],calls)
+        calls.clear();event['comment'].pop('performed_via_github_app')
+        self.assertFalse(m.trusted(event['comment']))
+        u.update(API(),event,calls.append);self.assertEqual([10,11],calls)
+        calls.clear();event['comment']['body']='removed header'
+        u.update(API(),event,calls.append);self.assertEqual([10,11],calls)
+        calls.clear();event['comment']['user']['id']=42
         u.update(API(),event,calls.append);self.assertEqual([],calls)
 
 if __name__=='__main__':unittest.main()

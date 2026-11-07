@@ -7,25 +7,21 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import time
 spec=importlib.util.spec_from_file_location('bridge',Path(__file__).with_name('codex.py'))
 b=importlib.util.module_from_spec(spec);spec.loader.exec_module(b)
 
-def update(api, event, rerun):
+def update(api, event, rerun, wait_seconds=1200, sleep=time.sleep, clock=time.monotonic):
     comment=event.get('comment') or {}
-    if not b.trusted(comment):return 'untrusted comment ignored'
-    body=comment.get('body') or ''
-    if not isinstance(body,str) or body.splitlines()[:1] not in ([b.SUMMARY],['<!-- codex-review-receipt:v1 -->']):return 'not a review receipt'
+    # Invalidation is conservative: webhook projections may omit performed_via_github_app,
+    # and editing/removing a receipt header must not suppress refresh. This cannot issue PASS.
+    # The verdict reader separately requires app identity and authenticates every edit.
+    if not b.source_bot(comment):return 'untrusted comment ignored'
     issue=event.get('issue') or {};pr=issue.get('number')
     if type(pr) is not int or pr<1 or not issue.get('pull_request'):raise b.Refused('invalid PR event')
     pull=api.pull(pr);sha=pull.get('head',{}).get('sha')
     if pull.get('state')!='open' or pull.get('draft') or not b.SHA.fullmatch(sha or ''):return 'no open reviewable PR'
-    if body.splitlines()[0]==b.SUMMARY:
-        # An old/null replacement removes evidence just as surely as deleting the summary.
-        # Refresh both current-head rows; never rerun the head named by the replacement.
-        kinds=['code','security']
-    else:
-        if not b.fresh_receipt([comment],sha,0):return 'old head receipt ignored'
-        kinds=['code']
+    kinds=['code','security']
     # Only the exact adoption workflow and current PR head; never cancel/rerun another head's work.
     runs=api.call('actions/workflows/claude-review.yml/runs?event=pull_request&head_sha='+sha+'&per_page=100')
     entries=runs.get('workflow_runs',[])
@@ -33,15 +29,21 @@ def update(api, event, rerun):
     matches=[r for r in entries if r.get('head_sha')==sha and r.get('event')=='pull_request' and r.get('path')=='.github/workflows/claude-review.yml']
     if not matches:return 'no push-time review yet'
     run=max(matches,key=lambda r:r['id'])
-    jobs=api.call(f'actions/runs/{run["id"]}/jobs?filter=latest&per_page=100')
-    if jobs.get('total_count')!=len(jobs.get('jobs',[])):raise b.Refused('review job list incomplete')
-    targets=[]
-    for kind in kinds:
-        name='claude-review' if kind=='code' else 'claude-security-review'
-        candidates=[j for j in jobs['jobs'] if j.get('name')==name]
-        if len(candidates)!=1:raise b.Refused('review job unavailable or ambiguous')
-        if candidates[0].get('status')=='completed':targets.append(candidates[0])
-    if not targets:return 'reviews already polling app state'
+    deadline=clock()+wait_seconds
+    while True:
+        latest=api.pull(pr)
+        if latest.get('head',{}).get('sha')!=sha or latest.get('state')!='open':return 'head moved; no rerun'
+        jobs=api.call(f'actions/runs/{run["id"]}/jobs?filter=latest&per_page=100')
+        if jobs.get('total_count')!=len(jobs.get('jobs',[])):raise b.Refused('review job list incomplete')
+        targets=[]
+        for kind in kinds:
+            name='claude-review' if kind=='code' else 'claude-security-review'
+            candidates=[j for j in jobs['jobs'] if j.get('name')==name]
+            if len(candidates)!=1:raise b.Refused('review job unavailable or ambiguous')
+            targets.append(candidates[0])
+        if all(j.get('status')=='completed' for j in targets):break
+        if clock()>=deadline:raise b.Refused('review still busy; invalidation was not discarded')
+        sleep(min(15,max(0,deadline-clock())))
     for job in targets:
         latest=api.pull(pr)
         if latest.get('head',{}).get('sha')!=sha or latest.get('state')!='open':return 'head moved; no rerun'
