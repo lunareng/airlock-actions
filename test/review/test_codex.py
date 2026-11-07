@@ -102,6 +102,33 @@ class Refusals(unittest.TestCase):
     def test_security_never_borrows_code_or_absence_of_findings_as_completion(self):
         self.assertEqual('pending',self.result([summary(),receipt()],kind='security'))
         self.assertEqual('pass',self.result([summary(kind='security')],kind='security'))
+    def test_observed_nullable_security_flags_prove_only_advisory_scan_completion(self):
+        fixture=json.loads((ROOT/'test/review/fixtures/codex-security-null-findings.json').read_text())
+        c=comment(fixture['body'])
+        result=m.decision([c],'security',SHA,m.stamp(NOW),repo='acme/project',pr=7)
+        self.assertEqual('completed_findings_unknown',result)
+        self.assertNotEqual('pass',result)
+        # Prose and an absent finding list never provide this completion proof.
+        with self.assertRaises(m.Refused):self.result([summary(kind='security',any=None,unresolved=None)],kind='security')
+    def test_nullable_security_completion_still_requires_exact_context_and_typed_metadata(self):
+        fixture=json.loads((ROOT/'test/review/fixtures/codex-security-null-findings.json').read_text())
+        original=fixture['body']
+        variants=[original.replace('codex-security-review:v1','codex-security-review:v2'),
+                  original.replace('"headSha":"'+SHA+'"','"headSha":"'+OLD+'"'),
+                  original.replace('"repository":"acme/project"','"repository":"other/project"'),
+                  original.replace('"pullRequestNumber":7','"pullRequestNumber":8'),
+                  original.replace('"mergeGateEnabled":false','"mergeGateEnabled":true'),
+                  original.replace('"blockingSeverityThreshold":"P0"','"blockingSeverityThreshold":"unknown"')]
+        for body in variants:
+            with self.assertRaises(m.Refused):m.decision([comment(body)],'security',SHA,m.stamp(NOW),repo='acme/project',pr=7)
+        with self.assertRaises(m.Refused):m.decision([comment(original)],'security',SHA,m.stamp(NOW))
+    def test_null_flags_never_authorize_code_or_a_missing_or_partial_security_state(self):
+        for kind in ['code','security']:
+            for any,unresolved in [(None,False),(False,None)]+([(None,None)] if kind=='code' else []):
+                with self.assertRaises(m.Refused):self.result([summary(kind=kind,any=any,unresolved=unresolved),receipt()],kind=kind)
+        c=summary(kind='security',any=None,unresolved=None)
+        c['body']=c['body'].replace('"has_any_findings": null, ','')
+        with self.assertRaises(m.Refused):self.result([c],kind='security')
     def test_review_rules_must_be_exact_and_unique(self):
         self.assertTrue(m.has_rules('# Existing guidance\n'+m.rules_block()))
         for text in ['',m.rules_block().replace('Proof.', 'Proof is optional.'),m.rules_block()+'\n'+m.rules_block()]:
@@ -229,6 +256,17 @@ class Lifecycle(unittest.TestCase):
         with patch.object(m.time,'monotonic',lambda:clock[0]),patch.object(m.time,'sleep',sleep):
             with self.assertRaises(m.Refused):self.run_main(wait='900',result='pending')
         self.assertLess(FakeGitHub.reads,80)
+    def test_advisory_scan_completion_is_visible_without_claiming_a_clean_verdict(self):
+        import contextlib, io
+        fixture=json.loads((ROOT/'test/review/fixtures/codex-security-null-findings.json').read_text())
+        class SecurityAPI(FakeGitHub):
+            def comments(self,*_):return [comment(fixture['body'])]
+        output=io.StringIO()
+        with patch.object(m,'GitHub',SecurityAPI),patch.dict(os.environ,{'REPO':'acme/project','PR':'7','SHA':SHA,'KIND':'security','WAIT':'0','AGENTS':'acme-*[bot]'},clear=True),contextlib.redirect_stdout(output):
+            self.assertEqual(0,m.main())
+        self.assertIn('completed_findings_unknown',output.getvalue())
+        self.assertIn('::warning::',output.getvalue())
+        self.assertIn('No clean verdict is claimed.',output.getvalue())
     def test_workflow_and_review_rule_changes_need_current_head_human_approval(self):
         with self.assertRaisesRegex(m.Refused,'human approval'):self.run_main(protected_value=True)
         self.assertEqual(0,self.run_main(protected_value=True,approved_value=True))
