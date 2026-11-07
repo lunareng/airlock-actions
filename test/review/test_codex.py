@@ -256,11 +256,11 @@ u=importlib.util.module_from_spec(spec2);spec2.loader.exec_module(u)
 class Updates(unittest.TestCase):
     def test_completed_rows_refresh_but_busy_rows_and_old_heads_never_do(self):
         class API:
-            moved=False;busy=False;old_run=False
+            moved=False;busy=False;old_run=False;wrong_pr=False
             def pull(self,pr):return {'state':'open','draft':False,'head':{'sha':OLD if self.moved else SHA}}
             def call(self,path):
                 if path.startswith('actions/workflows/'):
-                    return {'total_count':1,'workflow_runs':[{'id':7,'head_sha':OLD if self.old_run else SHA,'event':'pull_request','path':'.github/workflows/claude-review.yml'}]}
+                    return {'total_count':1,'workflow_runs':[{'id':7,'head_sha':OLD if self.old_run else SHA,'event':'pull_request','path':'.github/workflows/claude-review.yml','pull_requests':[{'number':8 if self.wrong_pr else 7}]}]}
                 return {'total_count':2,'jobs':[{'id':10,'name':'claude-review','status':'in_progress' if self.busy else 'completed'}, {'id':11,'name':'claude-security-review','status':'completed'}]}
         api=API();calls=[]
         event={'comment':summary(),'issue':{'number':7,'pull_request':{'url':'https://api.github.com/repos/acme/project/pulls/7'}}}
@@ -271,12 +271,13 @@ class Updates(unittest.TestCase):
         u.update(api,event,calls.append,sleep=lambda _:setattr(api,'busy',False));self.assertEqual([10,11],calls);calls.clear()
         api.busy=False;api.moved=True;u.update(api,event,calls.append);self.assertEqual([],calls)
         api.moved=False;api.old_run=True;u.update(api,event,calls.append);self.assertEqual([],calls)
+        api.old_run=False;api.wrong_pr=True;u.update(api,event,calls.append);self.assertEqual([],calls)
     def test_old_or_null_replacement_still_invalidates_current_head_rows(self):
         class API:
             def pull(self,pr):return {'state':'open','head':{'sha':SHA}}
             def call(self,path):
                 if path.startswith('actions/workflows/'):
-                    return {'total_count':1,'workflow_runs':[{'id':7,'head_sha':SHA,'event':'pull_request','path':'.github/workflows/claude-review.yml'}]}
+                    return {'total_count':1,'workflow_runs':[{'id':7,'head_sha':SHA,'event':'pull_request','path':'.github/workflows/claude-review.yml','pull_requests':[{'number':7}]}]}
                 return {'total_count':2,'jobs':[{'id':10,'name':'claude-review','status':'completed'},{'id':11,'name':'claude-security-review','status':'completed'}]}
         null_state=summary();null_state['body']=null_state['body'].replace('"commit_sha": '+json.dumps(SHA),'"commit_sha": null',1)
         for replacement in [summary(sha=OLD),null_state]:
@@ -287,7 +288,7 @@ class Updates(unittest.TestCase):
             def pull(self,pr):return {'state':'open','head':{'sha':SHA}}
             def call(self,path):
                 if path.startswith('actions/workflows/'):
-                    return {'total_count':1,'workflow_runs':[{'id':7,'head_sha':SHA,'event':'pull_request','path':'.github/workflows/claude-review.yml'}]}
+                    return {'total_count':1,'workflow_runs':[{'id':7,'head_sha':SHA,'event':'pull_request','path':'.github/workflows/claude-review.yml','pull_requests':[{'number':7}]}]}
                 return {'total_count':2,'jobs':[{'id':10,'name':'claude-review','status':'completed'}, {'id':11,'name':'claude-security-review','status':'completed'}]}
         calls=[];event={'action':'deleted','comment':summary(kind='security'),'issue':{'number':7,'pull_request':{'url':'example'}}}
         u.update(API(),event,calls.append);self.assertEqual([10,11],calls)
