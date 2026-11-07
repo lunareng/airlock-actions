@@ -103,7 +103,7 @@ When your owner's approval is what passes an agent's PR, the gate checks it agai
 separation_of_duties: required   # or recorded, the default
 ```
 
-- **`required`:** the approval doesn't count when your owner started that run, authored the commit, or the gate can't tell. It can't tell when the stamp has no `startedBy` (a PR not opened by Airlock's App, a re-run, a run Airlock no longer has) or when GitHub links the commit's author to no account. A commit pushed by a run your owner didn't start (a scheduled run, or one someone else dispatched), then their approval of it, passes.
+- **`required`:** the approval doesn't count when your owner started that run, authored the commit, or the gate can't tell. It can't tell when the stamp has no `startedBy` (a PR not opened by Airlock's App, a re-run, a run Airlock no longer has), when GitHub links the commit's author to no account, or when `human_owner` isn't one person's login (a team). A commit pushed by a run your owner didn't start (a scheduled run, or one someone else dispatched), then their approval of it, passes.
 - **`recorded`:** the approval counts, and the job summary says when the approver also started the run or authored the commit, or when the gate couldn't tell.
 - Any other value fails the gate, with no level, so a typo can't turn `required` into `recorded`.
 

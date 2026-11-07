@@ -275,6 +275,8 @@ def separation_of_duties(mode: str, owner: str | None, stamp: dict | None, head_
     if author is not None and author.lower() == who:
         both.append("authored it")
     unknown = []
+    if not LOGIN.fullmatch(who):
+        unknown.append("config.yaml's human_owner isn't one person's login")
     if started is None:
         unknown.append("Airlock's stamp doesn't say who started the run that pushed it")
     if author is None:
@@ -397,7 +399,9 @@ def verdict_line(g: dict) -> str:
     if g.get("duties") is False:
         return ("Verdict: separation_of_duties is required, and the owner's approval doesn't count here: the owner started "
                 "the run that pushed this commit or authored it, or the gate can't tell. A commit pushed by a run the owner "
-                "didn't start (a scheduled run, say), then the owner's approval of it, passes the gate.")
+                "didn't start (a scheduled run, say), then the owner's approval of it, passes the gate." +
+                (" And at L1 a person must also act (the L1 lines above)." if any("at L1 a person must also act" in r for r in g["reasons"])
+                 else ""))
     if g["level"] == "L1" and any(r.startswith("the human owner approved") for r in g["reasons"]):
         return ("Verdict: L1, so a person presses merge with auto-merge off; and if the PR owes proof, the owner's approval "
                 "needs a second key: each `## Proof owed` item naming its command and expected output, and the owner's "

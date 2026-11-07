@@ -533,6 +533,9 @@ for stamp in ({"role": "clerk", "startedBy": None}, {"role": "clerk"}, None, {"r
     assert not ok and "can't tell" in why and "doesn't say who started" in why, (stamp, why)
 ok, why = separation_of_duties("required", "@pyrabbit", {"role": "clerk", "startedBy": []}, None)
 assert not ok and "has no GitHub login" in why, "a head commit with no login can't be checked: refused"
+for owner in ("", None, "@", "@acme/owners"):
+    ok, why = separation_of_duties("required", owner, {"role": "clerk", "startedBy": []}, BOT)
+    assert not ok and "isn't one person's login" in why, ("an owner the gate can't compare fails closed", owner, why)
 ok, why = separation_of_duties("recorded", "@pyrabbit", {"role": "clerk", "startedBy": ["pyrabbit"]}, BOT)
 assert ok and why.startswith("separation of duties, recorded: the approver (pyrabbit) also started") and "approval stands" in why, why
 ok, why = separation_of_duties("recorded", "@pyrabbit", None, None)
@@ -575,6 +578,16 @@ with tempfile.TemporaryDirectory() as d:
     assert code == 1 and any("also authored it" in r for r in out["reasons"]), "required: the head commit's author's approval fails"
     code, out = approved("cluster/a.yaml", "required", ["acme-lead"])
     assert code == 1 and out["level"] == "L1" and out["duties"] is False, "required binds at L1 too"
+    assert "a person must also act" not in verdict_line(out), "the L1 second key held, so the verdict names the duties refusal alone"
+    Path(d, "cluster/b.yaml").write_text("x\n")
+    run("git", "add", "-A")
+    run("git", "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", "auto-merge on")
+    prf.write_text(json.dumps({"body": "## Signal\nx\n", "auto_merge": True, "proofs": [], "head_author": BOT}))
+    r = subprocess.run([sys.executable, str(GATE_PY), "--base", "HEAD~1", "--author", BOT, "--config", str(cfg), "--stamp-file", str(stamp),
+                        "--pr-file", str(prf), "--json", "--approved"], cwd=d, capture_output=True, text=True)
+    out = json.loads(r.stdout)
+    assert r.returncode == 1 and out["duties"] is False and verdict_line(out).endswith("And at L1 a person must also act (the L1 lines above)."), \
+        ("both blockers at L1: the verdict names both", verdict_line(out))
     code, out = approved("db/e.sql", "recorded", ["acme-lead"])
     assert code == 0 and out["allowed"] and any(r.startswith("separation of duties, recorded: the approver (acme-lead) also started") for r in out["reasons"]), out
     code, out = approved("db/f.sql", None, ["acme-lead"])
