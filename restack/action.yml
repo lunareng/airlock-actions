@@ -1,0 +1,34 @@
+name: Airlock restack
+description: Rebase dependent PRs, prove their patches unchanged, and publish the stack with atomic explicit leases.
+inputs:
+  token:
+    description: Scoped GitHub App token from this role's Airlock step; never the job's GITHUB_TOKEN.
+    required: true
+  repository:
+    description: Exact owner/name repository in the role's writes.repos.
+    required: true
+  merged-pr:
+    description: Merged root PR number; re-read at GitHub, never trusted from an event alone.
+    required: true
+  app-id:
+    description: GitHub App id from policy, for deduplicating the action's refusal comments.
+    required: true
+  dry-run:
+    description: Prepare and verify locally without publishing branches or comments.
+    default: "true"
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      with:
+        python-version: "3.12"
+    - name: prepare, verify and restack
+      shell: bash
+      env:
+        RESTACK_TOKEN: ${{ inputs.token }}
+        RESTACK_REPOSITORY: ${{ inputs.repository }}
+        RESTACK_PR: ${{ inputs.merged-pr }}
+        RESTACK_APP_ID: ${{ inputs.app-id }}
+        RESTACK_DRY_RUN: ${{ inputs.dry-run }}
+        RESTACK_ACTION: ${{ github.action_path }}
+      run: python3 -I "$RESTACK_ACTION/restack.py"
