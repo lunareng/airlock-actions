@@ -32,6 +32,10 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "generate"))
 import generate  # noqa: E402  (this repository's generator: the same settings, paths and rules)
 
+# The action's reviewed rubric, never a module from the policy or target checkout.
+sys.path.insert(0, str(HERE.parent / "review"))
+import codex as codex_review  # noqa: E402
+
 TEMPLATES = {"autonomy-gate.yml": HERE / "templates" / "autonomy-gate.yml", "claude-review.yml": HERE / "templates" / "claude-review.yml"}
 PLACEHOLDER = re.compile(r"<airlock:(\w+)>")
 BEGIN, END = "<!-- autonomy:begin", "<!-- autonomy:end -->"
@@ -75,12 +79,20 @@ class Adopt:
         # rollout force-pushes this branch: never main, never something git would read as another ref.
         if not BRANCH.fullmatch(self.branch) or self.branch in ("main", "master", "HEAD") or ".." in self.branch or self.branch.endswith((".lock", "/")):
             raise AdoptError("config.yaml adopt.branch: a branch of its own, not main")
+        self.review_ref = a.get("review_ref", self.gen.ref)
+        if not isinstance(self.review_ref, str) or not generate.REF.fullmatch(self.review_ref):
+            raise AdoptError("config.yaml adopt.review_ref: immutable commit or release tag required")
+        self.review_note = generate.one_line(a['review_note'], 'adopt.review_note') if a.get('review_note') is not None else (self.gen.ref_note if 'review_ref' not in a else '')
+        self.codex_review_rules = a.get("codex_review_rules", False)
+        if type(self.codex_review_rules) is not bool:
+            raise AdoptError("config.yaml adopt.codex_review_rules: true or false")
         self._generated = None
 
     def values(self) -> dict:
         return {"runner": self.runner, "runner_note": self.runner_note, "ref": self.gen.ref,
                 "ref_note": f" # {self.gen.ref_note}" if self.gen.ref_note else "",
-                "agent_logins": self.agent_logins, "human_owner_name": self.human_owner_name}
+                "agent_logins": self.agent_logins, "human_owner_name": self.human_owner_name,
+                "review_ref": self.review_ref, "review_ref_note": f" # {self.review_note}" if self.review_note else ""}
 
     def workflows(self) -> dict[str, str]:
         v = self.values()
@@ -149,6 +161,23 @@ def splice(claude_md: str | None, section: str) -> str:
     return s.rstrip("\n") + "\n\n" + section + "\n"
 
 
+def install_codex_rules(d: Path) -> None:
+    path = d / "AGENTS.md"
+    if path.is_symlink(): raise AdoptError("AGENTS.md is a symlink; refusing to write outside the checkout")
+    old = path.read_text() if path.exists() else "# Codex guidance\n"
+    begin, end = codex_review.RULES_BEGIN, codex_review.RULES_END
+    if old.count(begin) != old.count(end) or old.count(begin) > 1 or (begin in old and old.index(end) < old.index(begin)):
+        raise AdoptError("AGENTS.md has unmatched Codex review markers; fix it by hand")
+    if begin in old:
+        text = re.sub(re.escape(begin) + r".*?" + re.escape(end), lambda _: codex_review.rules_block(), old, count=1, flags=re.S)
+    else: text = old.rstrip('\n') + '\n\n' + codex_review.rules_block() + '\n'
+    path.write_text(text)
+
+
+def adopted(ad: Adopt) -> list[str]:
+    return ADOPTED + (["AGENTS.md"] if ad.codex_review_rules else [])
+
+
 def sh(*args: str, cwd: Path | None = None, check: bool = True, stdin: str | None = None) -> subprocess.CompletedProcess:
     r = subprocess.run(list(args), cwd=cwd, capture_output=True, text=True, input=stdin)
     if check and r.returncode != 0:
@@ -166,16 +195,17 @@ def write_files(d: Path, ad: Adopt) -> None:
         (d / ".github" / "workflows" / name).write_text(body)
     claude = d / "CLAUDE.md"
     claude.write_text(splice(claude.read_text() if claude.exists() else None, ad.section()))
+    if ad.codex_review_rules: install_codex_rules(d)
 
 
-def prettier(d: Path, repo: str) -> None:
+def prettier(d: Path, repo: str, codex_rules: bool = False) -> None:
     """A repository whose CI runs a formatter rejects the files as copied, so format them with its own prettier."""
     pkg = d / "package.json"
     if not pkg.is_file() or '"prettier"' not in pkg.read_text():
         return
     if not ok("npm", "ci", "--prefix", str(d), "--ignore-scripts", "--no-audit", "--no-fund", "--silent") or sh(
             "npx", "--no-install", "prettier", "--write", "CLAUDE.md", ".github/workflows/autonomy-gate.yml",
-            ".github/workflows/claude-review.yml", cwd=d, check=False).returncode != 0:
+            ".github/workflows/claude-review.yml", *(["AGENTS.md"] if codex_rules else []), cwd=d, check=False).returncode != 0:
         print(f"{repo}: npm ci or prettier failed; formatting skipped (its format check will say)", file=sys.stderr)
 
 
@@ -225,12 +255,14 @@ def rollout(ad: Adopt, org: str, signal: str, repos: list[str]) -> int:
             raise AdoptError(f"no repos/{name}.yaml in the policy")
         ad.owned(org, name)
     ad.workflows(), ad.section()  # every setting checked before the first clone
-    title = f"Adopt {ad.gen.repo}'s autonomy files: the gate, Claude review, the CLAUDE.md section"
+    title = f"Adopt {ad.gen.repo}'s autonomy files: the gate, review checks, and guidance"
     body = (f"## Signal\n{signal.strip()}\n\n## What changes\nThis repository's copies of {ad.gen.repo}'s autonomy files, "
             "written by lunareng/airlock-actions `adopt/adopt.py rollout`: `.github/workflows/autonomy-gate.yml` (every PR's "
             "level, and the owner's approval on an agent's L1/L2 PR), `.github/workflows/claude-review.yml` (Claude's "
             "`claude-review` verdict and the advisory `claude-security-review`), and the autonomy section of `CLAUDE.md` "
             f"(from the policy repo's `{ad.section_path}`). No product code changes.\n")
+    if ad.codex_review_rules:
+        body += "AGENTS.md gains the reviewed six-check Codex charter rubric; existing guidance is preserved.\n"
     failed = 0
     work = Path(tempfile.mkdtemp())
     try:
@@ -239,11 +271,11 @@ def rollout(ad: Adopt, org: str, signal: str, repos: list[str]) -> int:
             try:
                 clone(org, name, d)
                 write_files(d, ad)
-                prettier(d, name)
-                if not sh("git", "status", "--porcelain", "--", *ADOPTED, cwd=d).stdout.strip():
+                prettier(d, name, ad.codex_review_rules)
+                if not sh("git", "status", "--porcelain", "--", *adopted(ad), cwd=d).stdout.strip():
                     print(f"{name}: up to date")
                     continue
-                commit(d, ad.branch, f"{title}\n\nFrom {ad.gen.repo} with lunareng/airlock-actions adopt/adopt.py rollout.", ADOPTED)
+                commit(d, ad.branch, f"{title}\n\nFrom {ad.gen.repo} with lunareng/airlock-actions adopt/adopt.py rollout.", adopted(ad))
                 if not same_as_remote(d, ad.branch):
                     sh("git", "push", "-q", "-f", "origin", ad.branch, cwd=d)
                 print(f"{name}: PR #{open_pr(org, name, ad.branch, title, body)}")
@@ -300,6 +332,7 @@ def new_repo(ad: Adopt, org: str, name: str, wait: int = 5) -> int:
                 shutil.copytree(seeds, d, dirs_exist_ok=True)
             claude = d / "CLAUDE.md"
             claude.write_text(splice(claude.read_text() if claude.exists() else None, section))
+            if ad.codex_review_rules: install_codex_rules(d)
             commit(d, FIRST_BRANCH, f"Create {name} under its autonomy policy ({ad.gen.repo} repos/{name}.yaml)")
             sh("git", "push", "-q", "origin", FIRST_BRANCH, cwd=d)
             body = (f"## Signal\n{ad.gen.repo} `repos/{name}.yaml` (merged), created with lunareng/airlock-actions "

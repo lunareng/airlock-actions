@@ -17,7 +17,7 @@ python3 $A/adopt/adopt.py render   --policy $P --out /tmp/acme-workflows
 
 | Command | What it does | Needs |
 | --- | --- | --- |
-| `rollout` | Opens one PR per repository, on `adopt.branch`, wherever its `.github/workflows/autonomy-gate.yml`, `.github/workflows/claude-review.yml` or the autonomy section of `CLAUDE.md` differ from the policy's. It commits those three files and nothing else. A repository that already matches gets no PR. An open PR is updated rather than duplicated, and it isn't pushed again if it already holds the same files. A repository whose `package.json` uses prettier gets the files formatted with its own prettier. `--signal` heads every PR's `## Signal`. | push and PR rights on each repository |
+| `rollout` | Opens one PR per repository, on `adopt.branch`, wherever its `.github/workflows/autonomy-gate.yml`, `.github/workflows/claude-review.yml` or the autonomy section of `CLAUDE.md` differ from the policy's. It commits those three files, plus the reviewed AGENTS.md block when explicitly enabled, and nothing else. A repository that already matches gets no PR. An open PR is updated rather than duplicated, and it isn't pushed again if it already holds the same files. A repository whose `package.json` uses prettier gets the files formatted with its own prettier. `--signal` heads every PR's `## Signal`. | push and PR rights on each repository |
 | `new-repo` | After `repos/<name>.yaml` (with an `owner_role`) has merged: creates the repository (private, `main`, rebase merges only, auto-merge on, branches deleted on merge), then opens its first PR on `chore/autonomy-policy`. That PR has `AUTONOMY.yaml` (the policy file), `.github/CODEOWNERS` (the generated one), the two workflows, `seeds/<name>/` and the CLAUDE.md section. Then it protects `main`. You can run it again safely: it creates the repository only if it's missing, populates it only once, and protects it every time. | an org owner |
 | `protect` | `PUT /repos/<org>/<repo>/branches/main/protection` with the repository's generated body. `--dry-run` prints the request instead. | repository admin |
 | `render` | Writes the two workflows as this policy renders them, so you can read them. | nothing |
@@ -42,6 +42,9 @@ The tools also read generate's settings: `airlock_actions.ref` and `.note` pin t
 
 | Key | Default | What |
 | --- | --- | --- |
+| `adopt.review_ref` | `airlock_actions.ref` | Immutable review-action SHA or release tag; leaves role-workflow and gate pins unchanged. |
+| `adopt.review_note` | matching pin note | Comment beside the review-action pin. |
+| `adopt.codex_review_rules` | `false` | Install the reviewed six-check Codex charter rubric in AGENTS.md, preserving existing guidance. Requires human review before Codex is enabled. |
 | `adopt.runner` | `ubuntu-latest` | The runner label the gate and review jobs use. |
 | `adopt.runner_note` | | A one-line comment after the first `runs-on:` in each workflow. |
 | `adopt.agent_logins` | `*[bot]` | The logins whose PRs the review verdict binds (review's `agent-logins`). |

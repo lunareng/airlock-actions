@@ -24,7 +24,7 @@ jobs:
     runs-on: <airlock:runner><airlock:runner_note>
     timeout-minutes: 20
     steps:
-      - uses: lunareng/airlock-actions/review@<airlock:ref><airlock:ref_note>
+      - uses: lunareng/airlock-actions/review@<airlock:review_ref><airlock:review_ref_note>
         with:
           provider: ${{ vars.AIRLOCK_REVIEW_PROVIDER || vars.AIRLOCK_AGENT_PROVIDER || 'claude' }}
           claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -36,7 +36,7 @@ jobs:
     runs-on: <airlock:runner>
     timeout-minutes: 20
     steps:
-      - uses: lunareng/airlock-actions/review/security@<airlock:ref><airlock:ref_note>
+      - uses: lunareng/airlock-actions/review/security@<airlock:review_ref><airlock:review_ref_note>
         with:
           provider: ${{ vars.AIRLOCK_REVIEW_PROVIDER || vars.AIRLOCK_AGENT_PROVIDER || 'claude' }}
           claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -52,6 +52,6 @@ jobs:
       actions: write
       pull-requests: read
     steps:
-      - uses: lunareng/airlock-actions/review/rerun@<airlock:ref><airlock:ref_note>
+      - uses: lunareng/airlock-actions/review/rerun@<airlock:review_ref><airlock:review_ref_note>
         with:
           passed: ${{ needs.review.result == 'success' }}

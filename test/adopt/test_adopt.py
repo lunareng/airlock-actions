@@ -351,6 +351,51 @@ def _():
             assert word not in text, (p.name, word)
 
 
+@case("review pins can advance without changing the gate or role workflow trust pin")
+def _():
+    d = Path(tempfile.mkdtemp()) / 'policy'
+    shutil.copytree(FIXTURE, d)
+    new = 'b' * 40
+    set_config(d, lambda c: c['adopt'].update(review_ref=new, review_note='reviewed bridge'))
+    ad = adopt.Adopt(d, 'acme/policy')
+    workflows = ad.workflows()
+    assert f'/gate@{SHA}' in workflows['autonomy-gate.yml']
+    assert f'/review@{new} # reviewed bridge' in workflows['claude-review.yml']
+    assert f'/review/security@{new}' in workflows['claude-review.yml']
+    assert ad.gen.ref == SHA
+    set_config(d, lambda c: c['adopt'].update(review_ref='main'))
+    try: adopt.Adopt(d, 'acme/policy')
+    except adopt.AdoptError: pass
+    else: assert False, 'mutable review pin accepted'
+
+
+@case("Codex rules are opt-in, preserve guidance, and refuse malformed or escaping files")
+def _():
+    d = Path(tempfile.mkdtemp())
+    path = d / 'AGENTS.md'
+    path.write_text('# Existing guidance\nKeep this.\n')
+    adopt.install_codex_rules(d)
+    text = path.read_text()
+    assert text.startswith('# Existing guidance\nKeep this.\n')
+    assert adopt.codex_review.has_rules(text)
+    adopt.install_codex_rules(d)
+    assert path.read_text() == text
+    ad = adopt.Adopt(FIXTURE, 'acme/policy')
+    assert 'AGENTS.md' not in adopt.adopted(ad)
+    ad.codex_review_rules = True
+    assert 'AGENTS.md' in adopt.adopted(ad)
+    path.write_text(adopt.codex_review.RULES_BEGIN)
+    try: adopt.install_codex_rules(d)
+    except adopt.AdoptError: pass
+    else: assert False, 'unmatched marker overwritten'
+    path.unlink();outside=d/'outside';outside.write_text('unchanged')
+    path.symlink_to(outside)
+    try: adopt.install_codex_rules(d)
+    except adopt.AdoptError: pass
+    else: assert False, 'symlink followed'
+    assert outside.read_text() == 'unchanged'
+
+
 if os.environ.get("REPRODUCE"):
     @case("the templates reproduce the given policy's current workflows byte for byte")
     def _():

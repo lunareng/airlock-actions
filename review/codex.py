@@ -12,7 +12,6 @@ import sys
 import time
 
 APP_ID, BOT_ID = 1144995, 199175422
-ACTIONS_APP_ID, ACTIONS_BOT_ID = 15368, 41898282
 SUMMARY = '<!-- codex-pull-request-review-summary -->'
 STATE = re.compile(r'<!-- codex-review-state:v1 (.+) -->')
 SHA = re.compile(r'[0-9a-f]{40}')
@@ -32,13 +31,11 @@ def strict_json(text):
     def constant(_): raise ValueError('non-JSON number')
     return json.loads(text, object_pairs_hook=pairs, parse_constant=constant)
 
-def trusted(comment, actions=False):
+def trusted(comment):
     user = comment.get('user') or {}
     app = comment.get('performed_via_github_app') or {}
-    return (user.get('type') == 'Bot' and
-            user.get('id') == (ACTIONS_BOT_ID if actions else BOT_ID) and
-            user.get('login') == ('github-actions[bot]' if actions else 'chatgpt-codex-connector[bot]') and
-            app.get('id') == (ACTIONS_APP_ID if actions else APP_ID))
+    return (user.get('type') == 'Bot' and user.get('id') == BOT_ID and
+            user.get('login') == 'chatgpt-codex-connector[bot]' and app.get('id') == APP_ID)
 
 def stamp(text):
     try:
@@ -67,18 +64,18 @@ def summary_of(comments, kind, sha):
             raise Refused('missing Codex finding flags')
     return {'comment': latest, 'state': state}
 
-def request_body(kind, sha, context=""):
-    if context and not re.fullmatch(r"[0-9a-f]{64}", context): raise Refused("invalid review context hash")
-    rules = RULES if kind == 'code' else 'Report security findings with a realistic attack path, affected file and line, and remediation. Review only; do not edit code.'
-    digest = hashlib.sha256(rules.encode()).hexdigest()
-    command = '@codex review' if kind == 'code' else '@codex security review'
-    # The exact supported trigger starts the comment. Focus instructions are review material, not shell text.
-    focus = ' for compliance with the following autonomy-charter review rules' if kind == 'code' else ''
-    return f'{command}{focus}\n\n{rules}\n\nReview the current head {sha}.\n\n<!-- airlock-codex-request:v1 {kind} {sha} {digest} {context} -->'
+RULES_BEGIN, RULES_END = '<!-- airlock:codex-review:begin -->', '<!-- airlock:codex-review:end -->'
 
-def request_of(comments, body):
-    requests = [c for c in comments if trusted(c, actions=True) and c.get('body') == body and c.get('created_at') == c.get('updated_at')]
-    return min(requests, key=lambda c: c['id']) if requests else None
+def rules_block():
+    return RULES_BEGIN + '\n## Code Review Rules\n\n' + RULES.rstrip() + '\n' + RULES_END
+
+def has_rules(text):
+    if text.count(RULES_BEGIN) != 1 or text.count(RULES_END) != 1: return False
+    begin, end = text.index(RULES_BEGIN), text.index(RULES_END) + len(RULES_END)
+    if begin >= end: return False
+    block = text[begin:end]
+    normalize = lambda value: re.sub(r'[ \t\r\n]+', ' ', value).strip()
+    return normalize(block) == normalize(rules_block())
 
 def fresh_receipt(comments, sha, since):
     # A short SHA is never sufficient alone: this only establishes completion after our request;
@@ -91,17 +88,16 @@ def fresh_receipt(comments, sha, since):
         if len(matches) == 1 and sha.startswith(matches[0]): return True
     return False
 
-def decision(comments, kind, sha, request, saw_running=False):
+def decision(comments, kind, sha, intent_since):
     found = summary_of(comments, kind, sha)
     if not found: return 'pending'
     state = found['state']
     if state.get('status') in ('failed', 'cancelled', 'error'): return 'failed'
     if state.get('status') != 'completed': return 'pending'
     if state['has_any_findings'] or state['has_unresolved_findings']: return 'findings'
-    since = stamp(request.get('created_at'))
-    if stamp(found['comment'].get('updated_at')) < since: return 'pending'
-    if saw_running or (kind == 'code' and fresh_receipt(comments, sha, since)): return 'pass'
-    return 'pending'
+    if kind == 'code' and (stamp(found['comment'].get('updated_at')) < intent_since or not fresh_receipt(comments, sha, intent_since)):
+        return 'pending'
+    return 'pass'
 
 def agent(login, pattern):
     return re.fullmatch(re.escape(pattern).replace(r'\*', '.*'), login) is not None
@@ -111,11 +107,10 @@ def protected(files):
 
 class GitHub:
     def __init__(self, repo): self.root = 'repos/' + repo
-    def call(self, path, data=None, pages=False):
-        args = ['gh', 'api', self.root + '/' + path]
+    def call(self, path, pages=False):
+        args = ['gh', 'api', '--method', 'GET', self.root + '/' + path]
         if pages: args += ['--paginate', '--slurp']
-        if data is not None: args += ['--method', 'POST', '--input', '-']
-        try: r = subprocess.run(args, input=json.dumps(data) if data is not None else None, capture_output=True, text=True, timeout=30)
+        try: r = subprocess.run(args, capture_output=True, text=True, timeout=30)
         except (OSError, subprocess.TimeoutExpired): raise Refused('GitHub request unavailable') from None
         if r.returncode or len(r.stdout) > 15000000: raise Refused('GitHub review data unavailable')
         try: value = strict_json(r.stdout)
@@ -125,6 +120,30 @@ class GitHub:
             value = [item for page in value for item in page]
             if len(value) > 5000: raise Refused('review data limit exceeded')
         return value
+    def review_rules(self, base_sha):
+        import base64
+        if not SHA.fullmatch(base_sha or ''): raise Refused('base commit unavailable')
+        tree = self.call('git/trees/' + base_sha)
+        if tree.get('truncated') is not False: raise Refused('base tree incomplete')
+        entries = [e for e in tree.get('tree', []) if e.get('path') == 'AGENTS.md']
+        if len(entries) != 1 or entries[0].get('mode') not in ('100644', '100755') or entries[0].get('type') != 'blob':
+            raise Refused('install the reviewed Codex charter rules in base AGENTS.md before enabling this provider')
+        blob = self.call('git/blobs/' + entries[0]['sha'])
+        try:
+            if blob.get('encoding') != 'base64' or blob.get('size', 1000001) > 1000000: raise ValueError()
+            text = base64.b64decode(blob['content']).decode('utf8')
+        except (KeyError, ValueError, UnicodeError): raise Refused('base AGENTS.md unreadable') from None
+        if not has_rules(text): raise Refused('base AGENTS.md lacks the reviewed Codex charter rules')
+    def intent_time(self, pr, body, sha):
+        owner, name = self.root[6:].split('/')
+        query = 'query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){body headRefOid createdAt lastEditedAt}}}'
+        try:
+            r = subprocess.run(['gh','api','graphql','-f','query='+query,'-f','owner='+owner,'-f','name='+name,'-F','number='+str(pr)],capture_output=True,text=True,timeout=30)
+            if r.returncode: raise ValueError()
+            value = strict_json(r.stdout)['data']['repository']['pullRequest']
+            if value['body'] != body or value['headRefOid'] != sha: raise Refused('PR head or intent changed')
+            return stamp(value.get('lastEditedAt') or value['createdAt'])
+        except (ValueError, KeyError, TypeError, OSError, subprocess.TimeoutExpired): raise Refused('PR intent timestamp unavailable') from None
     def pull(self, pr): return self.call(f'pulls/{pr}')
     def comments(self, pr): return self.call(f'issues/{pr}/comments?per_page=100', pages=True)
     def files(self, pr, count):
@@ -191,27 +210,18 @@ def main():
     if problem:
         current();print(('::error::' if binding else '::warning::') + problem)
         if binding: return 1
-    body = request_body(kind, sha, expected_body)
-    comments = api.comments(pr)
-    request = request_of(comments, body) if kind == 'code' else None
-    if request is None:
-        current()
-        request = api.call(f'issues/{pr}/comments', {'body': body})
-        if not trusted(request, actions=True) or request.get('body') != body: raise Refused('review request must originate from the workflow GitHub token')
+    api.review_rules(pull.get('base', {}).get('sha'))
+    intent_since = api.intent_time(pr, pull.get('body') or '', sha)
     deadline = time.monotonic() + int(wait)
-    saw_running = False
     while True:
         current()
         comments = api.comments(pr)
-        found = summary_of(comments, kind, sha)
-        if found and found['state'].get('status') == 'running' and stamp(found['comment'].get('updated_at')) >= stamp(request.get('created_at')):
-            saw_running = True
-        result = decision(comments, kind, sha, request, saw_running)
+        result = decision(comments, kind, sha, intent_since)
         if result != 'pending' or time.monotonic() >= deadline: break
         time.sleep(min(5, max(0, deadline - time.monotonic())))
     current()  # Never write an old head's result after polling or a last-moment push.
     summary = os.environ.get('GITHUB_STEP_SUMMARY')
-    message = f'Codex GitHub app {kind} review: {result}; commit {sha}. Request: https://github.com/{repo}/pull/{pr}#issuecomment-{request["id"]}'
+    message = f'Codex GitHub app {kind} review: {result}; commit {sha}.'
     if summary:
         with open(summary, 'a') as f: f.write(message + '\n')
     print(message)
