@@ -18,7 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          ref: 87a0af0970b564e47fbbfe46a14925ad8c03bfc1 # fixed read-only observer source; never PR code
+          ref: 590075cef8e41248416fb743a6edca31566f0b54 # fixed read-only observer source; never PR code
           persist-credentials: false
       - name: observe current-head code and security review receipts
         env:
