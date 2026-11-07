@@ -26,6 +26,14 @@ CLI (run inside the repo under test, on the PR head):
     command and its expected output, and then also needs a `## Proof` comment from the owner covering every item.
     The body is the author's to edit after an approval, so auto-merge stays off even when it owes nothing: a
     `## Proof owed` deleted after the approval can't merge without a person pressing the button.
+    The PR JSON's `head_author` is the GitHub login GitHub links to the head commit's author (null without one).
+
+Library, separation of duties (lunareng/airlock#84, SOC 2 CC8.1):
+  separation_of_duties(mode, owner, stamp, head_author) -> (ok, reason)
+    When the owner's approval is what passes an agent's PR, it is checked against the stamp's `startedBy` (who
+    dispatched the runs that pushed the head commit) and the head commit's author. config.yaml
+    `separation_of_duties: required` refuses an approval from either, and one the gate can't check; `recorded`
+    (the default) lets it stand and says so in the reasons.
 
 Library, what a run shows:
   verdict_line(result) -> the job summary's verdict for the CLI's --json result.
@@ -231,6 +239,59 @@ def airlock_credit(author: str | None, airlock: dict, stamp: dict | None) -> tup
     return False, f"Airlock: no role is credited with this commit ({why}); a human takes it from here"
 
 
+DUTIES_MODES = ("required", "recorded")
+LOGIN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:\[bot\])?$")
+
+
+class DutiesError(ValueError):
+    """config.yaml's separation_of_duties can't be read; the gate fails closed rather than guess the mode."""
+
+
+def duties_mode(config: dict | None) -> str:
+    """config.yaml `separation_of_duties`: `required` or `recorded`, `recorded` when absent. Anything else raises: a
+    typo of `required` must not quietly record instead of enforce."""
+    mode = (config or {}).get("separation_of_duties")
+    if mode is None:
+        return "recorded"
+    if mode not in DUTIES_MODES:
+        raise DutiesError(f"separation_of_duties is {mode!r}, not {' or '.join(DUTIES_MODES)}")
+    return mode
+
+
+def separation_of_duties(mode: str, owner: str | None, stamp: dict | None, head_author: str | None) -> tuple[bool, str]:
+    """(ok, reason) for the owner's approval of an agent's head commit (lunareng/airlock#84). The approver must be
+    neither in the stamp's `startedBy` (the logins that dispatched the runs that pushed it; [] for a scheduled run)
+    nor the head commit's author. Logins compare without case, as GitHub's do. A `startedBy` that is absent or null
+    (Airlock can't tell, a PR not opened by Airlock's App) or a head commit with no GitHub login is "can't tell":
+    `required` refuses it, `recorded` says so and lets the approval stand."""
+    who = (owner or "").lstrip("@").lower()
+    started = stamp.get("startedBy") if isinstance(stamp, dict) else None
+    if not (isinstance(started, list) and all(isinstance(s, str) and LOGIN.fullmatch(s) for s in started)):
+        started = None
+    author = head_author if isinstance(head_author, str) and LOGIN.fullmatch(head_author) else None
+    both = []
+    if started is not None and who in {s.lower() for s in started}:
+        both.append("started the run that pushed it")
+    if author is not None and author.lower() == who:
+        both.append("authored it")
+    unknown = []
+    if started is None:
+        unknown.append("Airlock's stamp doesn't say who started the run that pushed it")
+    if author is None:
+        unknown.append("the head commit's author has no GitHub login")
+    if both:
+        what = f"the approver ({who}) also {' and '.join(both)}"
+        if mode == "required":
+            return False, f"separation of duties: {what}; separation_of_duties is required, so that approval doesn't count"
+        return True, f"separation of duties, recorded: {what}; separation_of_duties is recorded, so the approval stands"
+    if unknown:
+        what = f"the gate can't tell whether the approver ({who}) started the run or authored the commit ({'; '.join(unknown)})"
+        if mode == "required":
+            return False, f"separation of duties: {what}; separation_of_duties is required, so that approval doesn't count"
+        return True, f"separation of duties, recorded: {what}; separation_of_duties is recorded, so the approval stands"
+    return True, f"separation of duties: the approver ({who}) neither started the run that pushed this commit nor authored it"
+
+
 FENCE = re.compile(r"^\s*(?:(?:[-*+]|\d+[.)]|#{3,6}\s+\d+[.):]?)\s+)?(```|~~~)")  # also `1. ```` opening one
 H2 = re.compile(r"^##\s+(.*?)\s*#*\s*$")
 ITEM = re.compile(r"^(?:[-*+]|\d+[.)])\s+(.*)$")
@@ -333,6 +394,10 @@ def verdict_line(g: dict) -> str:
     """The job summary's verdict for a --json result."""
     if g["allowed"]:
         return "Verdict: may merge at this level."
+    if g.get("duties") is False:
+        return ("Verdict: separation_of_duties is required, and the owner's approval doesn't count here: the owner started "
+                "the run that pushed this commit or authored it, or the gate can't tell. A commit pushed by a run the owner "
+                "didn't start (a scheduled run, say), then the owner's approval of it, passes the gate.")
     if g["level"] == "L1" and any(r.startswith("the human owner approved") for r in g["reasons"]):
         return ("Verdict: L1, so a person presses merge with auto-merge off; and if the PR owes proof, the owner's approval "
                 "needs a second key: each `## Proof owed` item naming its command and expected output, and the owner's "
@@ -395,6 +460,11 @@ def main() -> int:
     except FloorError as e:
         print(f"::error title=autonomy gate::config.yaml {shown(str(e))}; no floors, no gate")
         return 1
+    try:
+        mode = duties_mode(config)
+    except DutiesError as e:
+        print(f"::error title=autonomy gate::config.yaml {shown(str(e))}; no gate")
+        return 1
     path_floors = (config.get("floors") or {}).get("paths")
     markers = config.get("agent_markers", {})
     stamp = None
@@ -427,19 +497,26 @@ def main() -> int:
     if credit:
         reasons.append(credit)
     allowed = credited and not (agent and RANK[level] <= 2)
+    duties = None
     if not allowed and a.approved:
         if level == "L1":
             allowed, why = second_key(pr)
             reasons += why
         else:
             allowed = True
-        reasons.append("the human owner approved this commit: the PR may merge" if allowed else
+        # The approval is what passes this PR, so whose it is matters (lunareng/airlock#84).
+        head_author = pr.get("head_author") if isinstance(pr, dict) else None
+        duties, why = separation_of_duties(mode, str(config.get("human_owner") or ""), stamp, head_author)
+        reasons.append(why)
+        reasons.append("the human owner approved this commit: the PR may merge" if allowed and duties else
+                       "the human owner approved this commit, but separation_of_duties refuses that approval (the line above)" if allowed else
                        "the human owner approved this commit, but at L1 a person must also act (the L1 lines above)")
+        allowed = allowed and duties
 
     # Every reason once more through shown(): a glob or a key from the PR's own AUTONOMY.yaml can't add a line either.
     reasons = [shown(r) for r in reasons]
     result = {"level": level, "agent": agent, "credited": credited, "allowed": allowed, "changed": len(paths), "reasons": reasons,
-              "level_reasons": level_reasons}
+              "level_reasons": level_reasons, "duties": duties}
     if a.json:
         print(json.dumps(result, indent=2))
     else:
@@ -447,6 +524,7 @@ def main() -> int:
         for r in reasons:
             print(f"  - {r}")
         print("verdict: " + ("may merge at this level" if allowed else
+                             "separation_of_duties is required and the owner's approval doesn't count (the line above)" if duties is False else
                              "L1: the owner approved, but a person must also act: proof for every Proof owed item in a comment, auto-merge off" if a.approved and level == "L1" else
                              "Airlock PR with no credited role: a human takes it from here (an approving review on this commit passes it)" if not credited else
                              "agent PR at L1/L2: a human takes it from here (an approving review on this commit passes it)"))
