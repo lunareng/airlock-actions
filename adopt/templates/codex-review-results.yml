@@ -9,12 +9,13 @@ permissions:
   pull-requests: read
   issues: read
   actions: write # isolated from the review/model jobs; this handler can rerun, never grant a verdict
-concurrency:
-  group: codex-review-result-${{ github.event.issue.number }}
-  cancel-in-progress: true
 jobs:
   refresh:
     if: ${{ github.event.issue.pull_request && github.event.comment.user.id == 199175422 && (vars.AIRLOCK_REVIEW_PROVIDER || vars.AIRLOCK_AGENT_PROVIDER || 'claude') == 'codex' }}
+    # Only an eligible app event joins the cancellation group. Ordinary comments cannot cancel it.
+    concurrency:
+      group: codex-review-result-${{ github.event.issue.number }}
+      cancel-in-progress: true
     runs-on: <airlock:runner><airlock:runner_note>
     timeout-minutes: 25
     steps:
