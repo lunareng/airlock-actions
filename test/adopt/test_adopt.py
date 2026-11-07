@@ -133,7 +133,9 @@ def _():
     assert (r["name"], s["name"]) == ("claude-review", "claude-security-review")
     assert r["runs-on"] == s["runs-on"] == "acme-ci"
     assert r["steps"][0]["uses"] == f"lunareng/airlock-actions/review@{SHA}" and s["steps"][0]["uses"] == f"lunareng/airlock-actions/review/security@{SHA}"
-    assert r["steps"][0]["with"] == {"claude-code-oauth-token": "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}", "agent-logins": "acme-*[bot]", "human-owner": "Dana"}
+    assert r["steps"][0]["with"] == {"provider": "${{ vars.AIRLOCK_REVIEW_PROVIDER || vars.AIRLOCK_AGENT_PROVIDER || 'claude' }}", "claude-code-oauth-token": "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}", "agent-logins": "acme-*[bot]", "human-owner": "Dana"}
+    assert s["steps"][0]["with"]["provider"] == r["steps"][0]["with"]["provider"]
+    assert "edited" in review[True]["pull_request"]["types"]  # PyYAML's YAML 1.1 reads on as True.
     assert "agents' PRs, acme-*[bot], and" in w["claude-review.yml"]
 
 
