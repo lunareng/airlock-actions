@@ -1,10 +1,10 @@
-# Claude reviews every pull request against the autonomy charter: lunareng/airlock-actions' review actions, run as
+# The selected provider reviews every pull request against the autonomy charter: lunareng/airlock-actions' review actions, run as
 # the steps of this repo's own jobs, so the checks are named claude-review (required on main; the verdict binds
 # agents' PRs, <airlock:agent_logins>, and anyone else's gets it as a warning) and claude-security-review (advisory).
 name: claude review
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review, edited]
   pull_request_review: # a person's approval re-runs only the verdict step (an agent's workflow PR waits for one)
     types: [submitted, dismissed]
 permissions:
@@ -26,6 +26,7 @@ jobs:
     steps:
       - uses: lunareng/airlock-actions/review@<airlock:ref><airlock:ref_note>
         with:
+          provider: ${{ vars.AIRLOCK_REVIEW_PROVIDER || vars.AIRLOCK_AGENT_PROVIDER || 'claude' }}
           claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           agent-logins: "<airlock:agent_logins>"
           human-owner: <airlock:human_owner_name>
@@ -37,6 +38,7 @@ jobs:
     steps:
       - uses: lunareng/airlock-actions/review/security@<airlock:ref><airlock:ref_note>
         with:
+          provider: ${{ vars.AIRLOCK_REVIEW_PROVIDER || vars.AIRLOCK_AGENT_PROVIDER || 'claude' }}
           claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
   # The two claude-review rows, one per event, say the same thing. Its own job, so actions: write never reaches the job
   # above. It must not be named claude-review.

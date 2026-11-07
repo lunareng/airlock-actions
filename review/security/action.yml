@@ -1,16 +1,29 @@
 name: claude security review
 description: Claude's /security-review of the pull request, posted as a comment; advisory. Run it as the steps of a job named claude-security-review on pull_request, with the same permissions as the review.
 inputs:
+  provider:
+    description: claude or codex; Codex uses the connected GitHub app without a CLI credential
+    default: claude
+  codex-wait-seconds:
+    description: maximum seconds to wait for a current-head Codex app receipt (0 to 900)
+    default: "900"
   claude-code-oauth-token:
     description: the token Claude Code runs on (pass secrets.CLAUDE_CODE_OAUTH_TOKEN)
-    required: true
+    required: false
   model:
     description: the model the review runs on
     default: claude-opus-5-5
 runs:
   using: composite
   steps:
+  - name: validate review provider
+    shell: bash
+    env:
+      PROVIDER: ${{ inputs.provider }}
+    run: |
+      case "$PROVIDER" in claude|codex) ;; *) echo "::error::review provider must be claude or codex"; exit 1 ;; esac
   - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+    if: inputs.provider == 'claude'
     with:
       fetch-depth: 0
   # gh before the reviewer, which posts its result with gh (lunareng/autonomy#104).
@@ -27,8 +40,22 @@ runs:
       echo "${GH_SHA256}  $dir/gh.tar.gz" | sha256sum -c -
       tar xzf "$dir/gh.tar.gz" -C "$dir" --strip-components=2 "gh_${GH_VERSION}_linux_amd64/bin/gh"
       echo "$dir" >> "$GITHUB_PATH"
+  - name: Codex GitHub app review
+    if: inputs.provider == 'codex'
+    shell: bash
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      PR: ${{ github.event.pull_request.number }}
+      SHA: ${{ github.event.pull_request.head.sha }}
+      AGENTS: '*[bot]'
+      KIND: security
+      WAIT: ${{ inputs.codex-wait-seconds }}
+      HERE: ${{ github.action_path }}/..
+    run: python3 -I "$HERE/codex.py"
   # A person's Markdown-only PR has nothing to scan.
   - id: docs
+    if: inputs.provider == 'claude'
     env:
       AUTHOR: ${{ github.event.pull_request.user.login }}
       BASE_REF: ${{ github.event.pull_request.base.ref }}
@@ -39,7 +66,7 @@ runs:
         echo "only=false" >> "$GITHUB_OUTPUT"
       fi
     shell: bash
-  - if: steps.docs.outputs.only != 'true'
+  - if: inputs.provider == 'claude' && (steps.docs.outputs.only != 'true')
     uses: anthropics/claude-code-action@aa8a7738e48bf30a40ee499ce818bef081c5ab5e # v1.0.257
     with:
       claude_code_oauth_token: ${{ inputs.claude-code-oauth-token }}
