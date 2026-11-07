@@ -87,15 +87,16 @@ runs:
       run: |
         # Read live, not from the event: the body, auto-merge and the comments may have changed since it fired.
         # Only the owner's comments and review bodies can carry proof. If a read fails there is no gate-pr.json,
-        # and gate.py fails an approved L1 PR for want of it, and with separation_of_duties required any approved
-        # agent PR (it can't tell who authored the head commit); nothing else reads it.
+        # and gate.py fails an approved L1 PR for want of it; no other level reads it. The head commit is read on its
+        # own: if that read fails, head_author is null, which only separation_of_duties reads (as "can't tell").
         rm -f "$RUNNER_TEMP/gate-pr.json"
         owner="$(python -I -c 'import yaml;print(yaml.safe_load(open("'"$RUNNER_TEMP"'/gate-config.yaml"))["human_owner"].lstrip("@"))')"
         gh api "repos/$REPO/pulls/$PR" > "$RUNNER_TEMP/pr.json" &&
           gh api --paginate --slurp "repos/$REPO/issues/$PR/comments?per_page=100" > "$RUNNER_TEMP/comments.json" &&
-          gh api --paginate --slurp "repos/$REPO/pulls/$PR/reviews?per_page=100" > "$RUNNER_TEMP/reviews.json" &&
-          gh api "repos/$REPO/commits/$HEAD" > "$RUNNER_TEMP/head-commit.json" ||
-          { echo "could not read the PR's body, comments, reviews or head commit; an approved L1 PR fails without them"; exit 0; }
+          gh api --paginate --slurp "repos/$REPO/pulls/$PR/reviews?per_page=100" > "$RUNNER_TEMP/reviews.json" ||
+          { echo "could not read the PR's body, comments or reviews; an approved L1 PR fails without them"; exit 0; }
+        gh api "repos/$REPO/commits/$HEAD" > "$RUNNER_TEMP/head-commit.json" ||
+          { echo "could not read the head commit; its author is unknown"; echo '{}' > "$RUNNER_TEMP/head-commit.json"; }
         OWNER="$owner" python -I - <<'PY' || echo "could not assemble the PR data; an approved L1 PR fails without it"
         import json, os
         t = os.environ["RUNNER_TEMP"]
