@@ -161,4 +161,35 @@ class Routing(unittest.TestCase):
             r=subprocess.run(['bash','-c',selector['run']],env={**os.environ,'PROVIDER':'invalid'},capture_output=True)
             self.assertNotEqual(0,r.returncode)
 
+spec2=importlib.util.spec_from_file_location('codex_update',ROOT/'review/codex-rerun.py')
+u=importlib.util.module_from_spec(spec2);spec2.loader.exec_module(u)
+
+class Updates(unittest.TestCase):
+    def test_completed_rows_refresh_but_busy_rows_and_old_heads_never_do(self):
+        class API:
+            moved=False;busy=False;old_run=False
+            def pull(self,pr):return {'state':'open','draft':False,'head':{'sha':OLD if self.moved else SHA}}
+            def call(self,path):
+                if path.startswith('actions/workflows/'):
+                    return {'total_count':1,'workflow_runs':[{'id':7,'head_sha':OLD if self.old_run else SHA,'event':'pull_request','path':'.github/workflows/claude-review.yml'}]}
+                return {'total_count':2,'jobs':[{'id':10,'name':'claude-review','status':'in_progress' if self.busy else 'completed'}, {'id':11,'name':'claude-security-review','status':'completed'}]}
+        api=API();calls=[]
+        event={'comment':summary(),'issue':{'number':7,'pull_request':{'url':'https://api.github.com/repos/acme/project/pulls/7'}}}
+        u.update(api,event,calls.append);self.assertEqual([10],calls)
+        calls.clear();api.busy=True;u.update(api,event,calls.append);self.assertEqual([],calls)
+        api.busy=False;api.moved=True;u.update(api,event,calls.append);self.assertEqual([],calls)
+        api.moved=False;api.old_run=True;u.update(api,event,calls.append);self.assertEqual([],calls)
+    def test_security_and_deleted_receipts_invalidate_their_own_rows(self):
+        class API:
+            def pull(self,pr):return {'state':'open','head':{'sha':SHA}}
+            def call(self,path):
+                if path.startswith('actions/workflows/'):
+                    return {'total_count':1,'workflow_runs':[{'id':7,'head_sha':SHA,'event':'pull_request','path':'.github/workflows/claude-review.yml'}]}
+                return {'total_count':2,'jobs':[{'id':10,'name':'claude-review','status':'completed'}, {'id':11,'name':'claude-security-review','status':'completed'}]}
+        calls=[];event={'action':'deleted','comment':summary(kind='security'),'issue':{'number':7,'pull_request':{'url':'example'}}}
+        u.update(API(),event,calls.append);self.assertEqual([11],calls)
+        calls.clear();event['comment']=receipt();u.update(API(),event,calls.append);self.assertEqual([10],calls)
+        calls.clear();event['comment']['performed_via_github_app']['id']=42
+        u.update(API(),event,calls.append);self.assertEqual([],calls)
+
 if __name__=='__main__':unittest.main()
