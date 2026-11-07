@@ -88,6 +88,16 @@ assert prompt.startswith("You are the triage for acme. The acme/policy repositor
 assert "Your GitHub identity is acme-airlock[bot]" in prompt and "agent/triage/" in prompt and "lunareng" not in prompt.lower()
 print("ok  the run's model, turns, tools, MCP config, clones and prompt come from the role's file")
 
+# Publishing (lunareng/autonomy#242): a role that opens PRs finishes the description before the push that starts
+# Code Review, and pushes again after any later body edit, itself: no connected person's review request.
+rule = "Finish a pull request's title and body before the push that starts its review"
+assert rule in prompt and "including an update that changes nothing else" in prompt and "never call it reviewed" in prompt
+assert "git commit --allow-empty" in prompt and "@codex" not in prompt
+assert "Bash(git:*)" in o["allowed"].split(","), "the re-review push uses only the role's own git"
+r, _, tmp = step(PLAN, policy({"roles/triage/role.yaml": ROLE.replace("  pull_requests: [open]\n", "")}), ROLE="triage", OWNER="acme", POLICY_REPO="acme/policy")
+assert r.returncode == 0 and rule not in Path(tmp, "prompt.txt").read_text(), "a role that opens no PR gets no publishing rule"
+print("ok  a role that opens PRs is told to finish its description before the review-starting push, and to push again after a later edit")
+
 r, o, _ = step(PLAN, policy({"roles/w/role.yaml": "role: w\nbrief: b\nwrites: {repos: [acme/api]}\n"}), ROLE="w", OWNER="acme", POLICY_REPO="acme/policy")
 assert r.returncode == 1 and "has no run: block" in r.stdout
 r, o, _ = step(PLAN, policy({"roles/w/role.yaml": ROLE.replace("clone: [acme/api, acme/web]", "clone: [acme/api, '../../etc']")}), ROLE="w", OWNER="acme", POLICY_REPO="acme/policy")

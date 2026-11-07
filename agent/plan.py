@@ -53,6 +53,16 @@ prompt = (
     f"token, not a key file; you never need one to do your work. Over your PR budget, a tool-request the router "
     f"started you on but you can't start yet gets a comment saying where it waits that ends with "
     f"`<!-- {role}:waits -->`: the router starts you on it again once one of your PRs closes.\n")
+if writes.get("pull_requests"):
+    # Code Review starts on a push and reads the description as it is then; the review reader refuses one that
+    # changed after that start (airlock-actions review/codex.py), and only a push can start a new one for a role.
+    prompt += (
+        "Finish a pull request's title and body before the push that starts its review: Code Review reads the "
+        "description as it is when the push starts it, so one edited later is unreviewed. After any edit to a pull "
+        "request's body made after its last push, including an update that changes nothing else, push one more commit "
+        "to its branch (`git commit --allow-empty -m \"Re-review the updated description\"`, then push); every later "
+        "edit needs another push after it. If you can't push, say on the pull request that its description changed "
+        "after its last review; never call it reviewed.\n")
 signal = os.environ.get("SIGNAL", "")
 if signal and re.fullmatch(r"https://github\.com/" + re.escape(owner) + r"/[A-Za-z0-9._-]+/(issues|pull)/[1-9][0-9]*", signal):
     prompt += "Lead with this signal: " + signal

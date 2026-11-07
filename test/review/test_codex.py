@@ -123,6 +123,27 @@ class Refusals(unittest.TestCase):
             self.assertEqual('pending',m.decision(evidence,'code',SHA,m.stamp(NOW),require_start=True))
         clean['_review_versions'][0]['body']=running['body'].replace('00:00:00.500000Z','00:00:01Z')
         self.assertEqual('pass',m.decision([clean],'code',SHA,m.stamp(NOW),require_start=True))
+    def test_role_publishing_pushes_after_a_body_update_and_never_borrows_an_older_start(self):
+        # lunareng/autonomy#242, from the airlock-actions#59 pilot: the push started Code Review at 20:07:17,
+        # then the role edited the body at 20:07:38. The publishing rule (agent/plan.py) pushes an empty
+        # commit after such a body-only update, so the app starts a review of the new head after the edit.
+        pushed, rerun = SHA, 'c'*40
+        def running(head, start):
+            body=summary(sha=head,status='running',code_time=start)['body']
+            return {'body':body.replace('✅ **Completed**','🔄 **Running** since'),'at':start}
+        def reviewed(head, start, done, older=()):
+            clean=summary(sha=head,code_time=done,updated=done)
+            clean['_review_versions']=[running(head,start),*older]
+            return [clean,receipt(sha=head[:10],created=done)]
+        edit=m.stamp('2026-11-07T20:07:38Z')
+        pilot=reviewed(pushed,'2026-11-07T20:07:17.475279Z','2026-11-07T20:10:00Z')
+        self.assertEqual('pending',m.decision(pilot,'code',pushed,edit,require_start=True))
+        older=[{'body':pilot[0]['body'],'at':'2026-11-07T20:10:00Z'},running(pushed,'2026-11-07T20:07:17.475279Z')]
+        fresh=reviewed(rerun,'2026-11-07T20:08:05Z','2026-11-07T20:11:00Z',older)
+        self.assertEqual('pass',m.decision(fresh,'code',rerun,edit,require_start=True))
+        # The earlier head's review never serves the new head, and an edit during the new review is still refused.
+        self.assertEqual('pending',m.decision(pilot,'code',rerun,edit,require_start=True))
+        self.assertEqual('pending',m.decision(fresh,'code',rerun,m.stamp('2026-11-07T20:09:00Z'),require_start=True))
     def test_a_newer_review_start_cannot_borrow_an_older_completion(self):
         clean=summary();running=summary(status='running',code_time='2026-01-01T00:02:00Z')
         running['body']=running['body'].replace('✅ **Completed**','🔄 **Running** since')
