@@ -100,7 +100,7 @@ test('a grant: the token is masked before anything else, then goes to the post s
   const lines = r.stdout.split('\n');
   assert.deepEqual(lines.filter((l) => l.includes(TOKEN)), [`::add-mask::${TOKEN}`]);
   assert.equal(lines[lines.findIndex((l) => l.includes(TOKEN))], `::add-mask::${TOKEN}`);
-  assert.deepEqual(r.output, { token: TOKEN, 'expires-at': '2026-10-30T04:00:00.000Z', sessions: '{}', 'read-token': '', telemetry: 'false' });
+  assert.deepEqual(r.output, { token: TOKEN, 'expires-at': '2026-10-30T04:00:00.000Z', sessions: '{}', 'read-token': '', telemetry: 'false', warnings: '[]' });
   assert.deepEqual(r.state, { token: TOKEN, origin: AIRLOCK, role: 'triage' });
   assert.match(r.stdout, /Airlock granted: 1 repositories \(webapp\), contents:write pull_requests:write, until 2026-10-30T04:00:00\.000Z/);
 });
@@ -154,10 +154,33 @@ test('a refusal stops the run with Airlock\'s reason and message, and nothing is
 test('shadow is green: what Airlock would hand out is printed, nothing is handed on, the step passes', () => {
   const r = main({ mint: { status: 200, body: { mode: 'shadow', decision: 'would_grant', run: '9.1', grant: granted.body.grant, sessions: { tracker: { audience: 'https://mcp.acme.example', scopes: ['api'], tools: [] } } } } });
   assert.equal(r.code, 0);
-  assert.deepEqual(r.output, { telemetry: 'false' });
+  assert.deepEqual(r.output, { telemetry: 'false', warnings: '[]' });
   assert.deepEqual(r.state, {});
   assert.deepEqual(r.env, {});
   assert.match(r.stdout, /Airlock would grant: 1 repositories \(webapp\), contents:write pull_requests:write, and sessions for tracker\. Shadow: nothing was handed out\./);
+  assert.doesNotMatch(r.stdout, /::warning/);
+});
+
+test('a shadow answer\'s warnings: one titled annotation each, the list as the warnings output, the step still passes', () => {
+  const said = ["wiki isn't connected: an owner connects it on the MCP servers page", "Airlock's MCP gateway isn't serving runs yet, so a live run would be refused (wiki)"];
+  const r = main({ mint: { status: 200, body: { mode: 'shadow', decision: 'would_grant', warnings: said } } });
+  assert.equal(r.code, 0, r.stdout);
+  assert.deepEqual(r.stdout.split('\n').filter((l) => l.startsWith('::warning')), said.map((w) => `::warning title=Airlock::${w}`));
+  assert.deepEqual(JSON.parse(r.output.warnings), said);
+});
+
+test('warnings are escaped as Actions requires; a non-string entry is skipped; no list is none', () => {
+  const shadow = (warnings) => main({ mint: { status: 200, body: { mode: 'shadow', decision: 'would_grant', warnings } } });
+  const r = shadow(['100% sure\r\nnext line', 7, null, { a: 1 }, 'ok']);
+  assert.equal(r.code, 0, r.stdout);
+  assert.deepEqual(r.stdout.split('\n').filter((l) => l.startsWith('::warning')), ['::warning title=Airlock::100%25 sure%0D%0Anext line', '::warning title=Airlock::ok']);
+  assert.deepEqual(JSON.parse(r.output.warnings), ['100% sure\r\nnext line', 'ok']);
+  for (const warnings of [undefined, 'one string', { a: 'b' }, 3, null]) {
+    const n = shadow(warnings);
+    assert.equal(n.code, 0, JSON.stringify(warnings));
+    assert.equal(n.output.warnings, '[]', JSON.stringify(warnings));
+    assert.doesNotMatch(n.stdout, /::warning/, JSON.stringify(warnings));
+  }
 });
 
 test('the grant line names the repositories after the count; a name not shaped like one is `?`; none prints as before', () => {
@@ -424,7 +447,7 @@ test('telemetry in shadow: the run gets nothing but its telemetry, and the step 
   const r = main({ mint: { status: 200, body: { mode: 'shadow', decision: 'would_grant', run: '9.1', grant: granted.body.grant, sessions: {}, ...telemetry() } } });
   assert.equal(r.code, 0, r.stdout);
   assert.deepEqual(r.env, TELEMETRY_ENV);
-  assert.deepEqual(r.output, { telemetry: 'true' });
+  assert.deepEqual(r.output, { telemetry: 'true', warnings: '[]' });
   assert.deepEqual(r.state, {});
   assert.deepEqual(r.stdout.split('\n').filter((l) => l.includes(TELEMETRY_TOKEN)), [`::add-mask::${TELEMETRY_TOKEN}`]);
   assert.match(r.stdout, /Shadow: nothing was handed out but its telemetry\./);

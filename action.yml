@@ -40,6 +40,8 @@ outputs:
     description: "A token that can only read the repositories the file's run.clone names and its writes don't, masked; empty when there are none. The post step ends it."
   telemetry:
     description: "true when Claude Code's telemetry env, with this run's own telemetry session (masked), was exported to every later step; false when the tenant's telemetry is off."
+  warnings:
+    description: "What a live run of this role would meet, as Airlock says in a shadow run, as a JSON list of strings ([] when none). Each is also a warning annotation titled Airlock; none fails the step."
 runs:
   using: node24
   main: src/main.mjs

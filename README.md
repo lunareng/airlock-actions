@@ -55,6 +55,7 @@ jobs:
 | `sessions` | The run's MCP sessions as JSON, keyed by connector: `fromJSON(steps.airlock.outputs.sessions).<connector>.token`. |
 | `read-token` | A token that can only read the repositories the file's `run.clone` names and its writes don't. Empty when there are none. |
 | `telemetry` | `true` when Claude Code's telemetry env was exported to the later steps; `false` when the tenant's telemetry is off. |
+| `warnings` | What a live run of this role would meet, as Airlock says in a shadow run (a server no owner has connected, for example), as a JSON list of strings; `[]` when there's nothing. Each also shows as a warning annotation titled `Airlock`; none fails the step. |
 
 ## The gate
 

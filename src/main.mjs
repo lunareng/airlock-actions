@@ -56,6 +56,16 @@ function telemetry() {
   return 'true';
 }
 
+// What a live run would meet, as Mint's shadow answer says (lunareng/airlock-actions#34): a server no owner has
+// connected, the gateway not serving runs yet. One titled warning annotation each, so a tenant reading its runs in
+// the Actions log sees them, and the list as the `warnings` output, written by a grant too so it is always set.
+// Only strings count; no list is none. A warning never fails the step.
+function warnings() {
+  const said = Array.isArray(out.warnings) ? out.warnings.filter((w) => typeof w === 'string') : [];
+  for (const w of said) annotate('warning', w, 'Airlock');
+  return JSON.stringify(said);
+}
+
 // Shadow is green: Airlock checked the run, recorded what it would hand out, and handed out nothing, so the step
 // passes with an empty token and a step that needs one checks for it. Turning the role live (identity.key_store:
 // airlock) then changes nothing in its workflow. (lunareng's own script fails a would-grant instead, because its
@@ -63,6 +73,7 @@ function telemetry() {
 if (status === 200 && out.decision === 'would_grant') {
   const sent = telemetry();
   put('GITHUB_OUTPUT', 'telemetry', sent);
+  put('GITHUB_OUTPUT', 'warnings', warnings());
   say(`Airlock would grant: ${grant || 'nothing'}${sessions.length ? `, and sessions for ${sessions.map(([c]) => c).join(', ')}` : ''}. Shadow: nothing was handed out${sent === 'true' ? ' but its telemetry' : ''}.`);
   process.exit(0);
 }
@@ -94,6 +105,7 @@ put('GITHUB_OUTPUT', 'expires-at', /^[0-9TZ:.+-]{10,40}$/.test(String(out.expire
 put('GITHUB_OUTPUT', 'sessions', JSON.stringify(Object.fromEntries(sessions.map(([c, s]) => [c, { audience: s.audience, token: s.token, expiresAt: s.expiresAt, scopes: s.scopes, tools: s.tools }]))));
 put('GITHUB_OUTPUT', 'read-token', read ? read.token : '');
 put('GITHUB_OUTPUT', 'telemetry', telemetry());
+put('GITHUB_OUTPUT', 'warnings', warnings());
 say(`Airlock granted: ${grant}, until ${out.expiresAt}`);
 if (read) say(`Airlock read-only: ${(read.grant?.repositories ?? []).length} repositories, until ${read.expiresAt}`);
 for (const [c, s] of sessions) say(`Airlock session: ${c} for ${s.audience}, until ${s.expiresAt}`);
