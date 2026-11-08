@@ -128,7 +128,7 @@ jobs:
           python-version: "3.12"
       - name: the role's file
         id: plan
-        uses: lunareng/airlock-actions/agent/plan@01d8df232ec19af32302886c04763aa57bc6cf3f # launcher source in this PR
+        uses: lunareng/airlock-actions/agent/plan@3e64ce3e63ac1fc9ede326e14fa68ec4627dda48 # publishing-order rule, #63; retained source/agent-publishing-3e64ce3
         with:
           role: ${{ inputs.role }}
           signal: ${{ inputs.signal }}
