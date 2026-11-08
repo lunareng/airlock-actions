@@ -63,9 +63,13 @@ if writes.get("pull_requests"):
         "to its branch (`git commit --allow-empty -m \"Re-review the updated description\"`, then push); every later "
         "edit needs another push after it. If you can't push, say on the pull request that its description changed "
         "after its last review; never call it reviewed.\n")
+# Only an issue or pull request URL in the run's own organization leads the prompt (airlock-actions#29): anyone who
+# can dispatch the role can type a signal. Any other is left out, and never echoed, since the log is the run's record.
 signal = os.environ.get("SIGNAL", "")
 if signal and re.fullmatch(r"https://github\.com/" + re.escape(owner) + r"/[A-Za-z0-9._-]+/(issues|pull)/[1-9][0-9]*", signal):
     prompt += "Lead with this signal: " + signal
+elif signal:
+    print(f"::warning title=signal::the signal isn't an issue or pull request URL in {owner}; the run goes on without it")
 if selected['provider'] == 'codex':
     prompt += (" Use individual literal shell commands: no pipelines, redirection, command substitutions or multiline shell. "
                "Read files with cat, head, tail, rg, ls or sed -n START,ENDp. Other commands must match run.bash. "

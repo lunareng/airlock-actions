@@ -40,8 +40,8 @@ subscription auth to public/fork jobs. API-key jobs never acquire a subscription
 ## Policy mapping and limits
 
 GitHub tokens, MCP sessions, clone scopes and the mint action's always-running post-step revoke are shared by
-both providers. Only validated issue/PR signal URLs in the caller's organization enter the prompt; routine
-labels remain out of the prompt. Nonzero CLI exits, Claude `is_error`, Codex failed turns and failed auth cleanup
+both providers. Only validated issue/PR signal URLs in the caller's organization enter the prompt; any other
+signal, a routine label included, stays out of it with a `::warning title=signal::` that never echoes the value. Nonzero CLI exits, Claude `is_error`, Codex failed turns and failed auth cleanup
 fail the job. A usage-limit failure never replays a partially completed job with another provider.
 
 Codex runs with workspace-write sandboxing, no escalation approval, project config untrusted, optional apps,
