@@ -32,8 +32,10 @@ const secrets = [];
 export const hide = (...values) => { for (const v of values) if (typeof v === 'string' && v) secrets.push(v); };
 const cut = (line) => secrets.reduce((l, t) => l.split(t).join('***'), String(line));
 export const say = (line) => console.log(cut(line));
-// A workflow command's message, escaped the way the runner reads it (%, CR and LF), after the cut.
-export const annotate = (kind, line) => console.log(`::${kind}::${cut(line).replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A')}`);
+// A workflow command's message, escaped the way the runner reads it (%, CR and LF), after the cut; a title, when
+// given, escaped as a property (those three, and : and ,).
+const escape = (s) => s.replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A');
+export const annotate = (kind, line, title) => console.log(`::${kind}${title ? ` title=${escape(title).replace(/:/g, '%3A').replace(/,/g, '%2C')}` : ''}::${escape(cut(line))}`);
 export const mask = (value) => process.stdout.write(`::add-mask::${value}\n`);
 
 // A value for later steps (GITHUB_OUTPUT) or for the post step (GITHUB_STATE): one name=value line, which every
