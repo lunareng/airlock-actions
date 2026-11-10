@@ -8,8 +8,10 @@ policy repo's default branch:
   repos/<this repo>.yaml     this repository's policy there, the stricter of it and AUTONOMY.yaml scores the PR
   roles/*/role.yaml          every role's bot login, so a PR any role opens is an agent's
 then hands the token back. It writes the gate's config (config.yaml with every role's login under
-agent_markers.logins, and Airlock's App login once any role is on Airlock; `floors` passes through as written) and
-this repository's policy file. A `floors` the gate can't read fails here, before anything is scored.
+agent_markers.logins, and Airlock's App login once any role is on Airlock; `floors` passes through as written; and
+`policy_repository` and `policy_config_files`, the repository read and its config files, so that a PR there changing
+one scores L2 or stricter, airlock-actions#35) and this repository's policy file. A `floors` the gate can't read fails
+here, before anything is scored.
 
   policy.py --airlock <origin> --repo-name <name> --config-out <file> --policy-out <file>
     Exit 0: both written (no policy-out when the policy repo has no file for this repository).
@@ -39,6 +41,7 @@ from gate import FloorError, floors_of  # noqa: E402
 TOKEN = re.compile(r"[A-Za-z0-9_.~+/=-]{20,4096}")
 REPO = re.compile(r"[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}")
 NAME = re.compile(r"[A-Za-z0-9._-]{1,100}")
+IN_REPO = re.compile(r"[A-Za-z0-9._{}-]+(/[A-Za-z0-9._{}-]+)*")  # Airlock's inRepo: a relative path inside the repository
 ROLE_FILE = re.compile(r"roles/[A-Za-z0-9._-]{1,100}/role\.yaml")
 MAX_ROLES = 200
 API = os.environ.get("GITHUB_API_URL", "https://api.github.com")
@@ -106,7 +109,16 @@ def oidc(audience: str) -> str:
     return value
 
 
-def read_grant(airlock: str) -> tuple[str, str]:
+def config_file(value) -> str | None:
+    """The tenant's policyConfigFile when Airlock's answer names one inside the repository, else None: the gate then
+    holds config.yaml alone, as Airlock falls back to it for a value that isn't a path inside the repository."""
+    if isinstance(value, str) and len(value) <= 200 and IN_REPO.fullmatch(value) and \
+            all(s not in (".", "..") for s in value.split("/")):
+        return value
+    return None
+
+
+def read_grant(airlock: str) -> tuple[str, str, str | None]:
     req = urllib.request.Request(f"{airlock}/v1/read", method="POST", headers={"Authorization": f"Bearer {oidc(airlock)}"})
     a = json.loads(_call(req, "Airlock"))
     token, repo = a.get("token") or "", a.get("repository") or ""
@@ -115,7 +127,7 @@ def read_grant(airlock: str) -> tuple[str, str]:
     print(f"::add-mask::{token}", flush=True)
     if not isinstance(repo, str) or not REPO.fullmatch(repo):
         raise Stop("Airlock's answer names no policy repository")
-    return token, repo
+    return token, repo, config_file(a.get("policyConfigFile"))
 
 
 def github(token: str, path: str, raw: bool = False):
@@ -135,9 +147,16 @@ def maybe_file(token: str, repo: str, path: str) -> str | None:
         raise
 
 
-def gate_config(config: dict, roles: list[dict]) -> dict:
-    """config.yaml with every role's bot login as an agent marker, and Airlock's App login once a role is on it."""
+def gate_config(config: dict, roles: list[dict], repo: str | None = None, other_config: str | None = None) -> dict:
+    """config.yaml with every role's bot login as an agent marker, Airlock's App login once a role is on it, and the
+    policy repository with its config files (config.yaml, and the tenant's policyConfigFile when it is another file).
+    Those two keys are always this read's own, never the file's."""
     cfg = dict(config)
+    cfg.pop("policy_repository", None)
+    cfg.pop("policy_config_files", None)
+    if repo:
+        cfg["policy_repository"] = repo
+        cfg["policy_config_files"] = list(dict.fromkeys(["config.yaml", *([other_config] if other_config else [])]))
     markers = dict(cfg.get("agent_markers") or {})
     logins = set(markers.get("logins") or [])
     logins |= {r["identity"]["github_login"] for r in roles
@@ -205,7 +224,7 @@ def main() -> int:
         return 1
     token = None
     try:
-        token, repo = read_grant(airlock)
+        token, repo, other_config = read_grant(airlock)
         config, roles, policy = read_policy(token, repo, a.repo_name)
     except Stop as e:
         print(f"::error title=autonomy gate::{_line(e)}; no policy, no gate")
@@ -214,7 +233,7 @@ def main() -> int:
         if token:
             end(token)
     with open(a.config_out, "w") as f:
-        yaml.safe_dump(gate_config(config, roles), f, sort_keys=False)
+        yaml.safe_dump(gate_config(config, roles, repo, other_config), f, sort_keys=False)
     if policy is not None:
         with open(a.policy_out, "w") as f:
             f.write(policy)

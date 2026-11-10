@@ -8,10 +8,12 @@ Library:
     (floor_table). Reasons name each path and the rule that set its level.
 
 CLI (run inside the repo under test, on the PR head):
-  gate.py --base <ref> [--policy AUTONOMY.yaml] [--main-policy <file>] [--branch <name>] [--author <login>] [--json]
+  gate.py --base <ref> [--policy AUTONOMY.yaml] [--main-policy <file>] [--repository <owner/name>] [--branch <name>] [--author <login>] [--json]
     Exit 0: the PR may be merged by whoever opened it.
     --main-policy: the repo's repos/<repo>.yaml on lunareng/autonomy's main. The stricter of it and AUTONOMY.yaml
     scores the PR (with_main_policy), so a tightening on main binds open PRs before the copy is rolled out (autonomy#160).
+    --repository: this PR's repository. When it is the policy repo the config names (policy_config_files), a change to
+    the policy repo's config.yaml scores L2 or stricter in every tenant, whatever its default (airlock-actions#35).
     Exit 1: an agent opened it and its level is L1 or L2, so a human must take it from here.
     A human-authored PR always exits 0: CODEOWNERS and branch protection route L1/L2 to the owner.
     --approved: the human owner's latest review on this very commit is APPROVED, which is "a human took
@@ -167,8 +169,10 @@ def shown(path: str) -> str:
 
 
 def effective_level(policy: dict, changed_paths: list[str], base_policy: dict | None = None,
-                    floors: dict | None = None) -> tuple[str, list[str]]:
-    """`floors` is the tenant's `floors.paths` as config.yaml writes it; None is the default's alone."""
+                    floors: dict | None = None, policy_config: tuple[str, ...] = ()) -> tuple[str, list[str]]:
+    """`floors` is the tenant's `floors.paths` as config.yaml writes it; None is the default's alone. `policy_config`
+    is the policy repo's own config files, when this is the policy repo (policy_config_files): each scores L2 or stricter
+    whatever the change, since its floors, MCP modes and denies take effect without a person (airlock-actions#35)."""
     path_floors = floor_table("paths", floors)
     level = policy.get("default", "L2")
     reasons = [f"default {level}"]
@@ -193,7 +197,25 @@ def effective_level(policy: dict, changed_paths: list[str], base_policy: dict | 
             elif RANK["L2"] < RANK[level]:
                 level = "L2"
                 reasons.append("AUTONOMY.yaml: policy change is L2 (loosening waits for Matthew)")
+        if path in policy_config:
+            if RANK["L2"] < RANK[level]:
+                level = "L2"
+            reasons.append(f"{shown(path)}: L2 or stricter, the policy repo's config (its floors and MCP modes take effect on merge)")
     return level, reasons
+
+
+def policy_config_files(config: dict | None, repository: str | None) -> tuple[str, ...]:
+    """The policy repo's config files when `repository` is the policy repo, else none. gate/policy.py records which
+    repository it read the policy from (`policy_repository`) and its config files (`policy_config_files`: config.yaml,
+    and the tenant's policyConfigFile when Airlock names another). Repository names compare without case, as GitHub's."""
+    cfg = config or {}
+    policy_repo = cfg.get("policy_repository")
+    if not (isinstance(policy_repo, str) and isinstance(repository, str) and policy_repo.lower() == repository.lower()):
+        return ()
+    files = cfg.get("policy_config_files")
+    if not isinstance(files, list):
+        files = []
+    return tuple(dict.fromkeys(["config.yaml", *(f for f in files if isinstance(f, str) and f)]))
 
 
 def with_main_policy(level: str, reasons: list[str], main_policy: dict | None, changed_paths: list[str],
@@ -447,6 +469,7 @@ def main() -> int:
     ap.add_argument("--base", required=True)
     ap.add_argument("--policy", default="AUTONOMY.yaml")
     ap.add_argument("--main-policy", help="this repo's file on lunareng/autonomy's main (repos/<repo>.yaml); the stricter scores")
+    ap.add_argument("--repository", help="this PR's repository (owner/name); in the policy repo its config.yaml is L2 or stricter")
     ap.add_argument("--branch")
     ap.add_argument("--author")
     ap.add_argument("--config", default=str(ROOT / "config.yaml"))
@@ -489,7 +512,8 @@ def main() -> int:
             base_policy = yaml.safe_load(subprocess.check_output(["git", "show", f"{a.base}:{a.policy}"], text=True, stderr=subprocess.DEVNULL))
         except subprocess.CalledProcessError:
             base_policy = None
-    level, reasons = effective_level(policy, paths, base_policy, floors=path_floors)
+    level, reasons = effective_level(policy, paths, base_policy, floors=path_floors,
+                                     policy_config=policy_config_files(config, a.repository))
     if a.main_policy:
         main_file = Path(a.main_policy)
         level, reasons = with_main_policy(level, reasons, yaml.safe_load(main_file.read_text()) if main_file.is_file() else None, paths, a.policy,

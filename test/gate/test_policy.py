@@ -205,4 +205,19 @@ assert errors == [f"::error title=autonomy gate::the policy repo (repos/acme/pol
 assert sum(1 for c in w.calls if c[1].endswith("/contents/" + ROLE)) == 1, "a plain 403 is not retried"
 print("ok  a rate-limit 403 or 429 is retried before the gate fails closed; a plain 403 fails it at once")
 
+# airlock-actions#35: the gate's config names the repository read and its config files, so a PR in the policy repo that
+# changes one scores L2 or stricter. Those keys are the read's own: config.yaml can't set them.
+w = World()
+w.files["config.yaml"] = CONFIG + "policy_repository: acme/api\npolicy_config_files: [nothing.yaml]\n"
+r, cfg, policy = run(w)
+assert r.returncode == 0 and cfg["policy_repository"] == "acme/policy" and cfg["policy_config_files"] == ["config.yaml"], cfg
+for named, files in [("airlock/config.yaml", ["config.yaml", "airlock/config.yaml"]), ("config.yaml", ["config.yaml"]),
+                     ("../config.yaml", ["config.yaml"]), ("/etc/config.yaml", ["config.yaml"]), ("a//b.yaml", ["config.yaml"]),
+                     ("a\nb.yaml", ["config.yaml"]), (7, ["config.yaml"]), (None, ["config.yaml"])]:
+    w = World()
+    w.airlock = (200, {"token": TOKEN, "repository": "acme/policy", "expiresAt": "x", "policyConfigFile": named})
+    r, cfg, policy = run(w)
+    assert r.returncode == 0 and cfg["policy_config_files"] == files, (named, cfg)
+print("ok  the gate's config names the policy repo and its config files; a policyConfigFile outside the repo is config.yaml alone")
+
 print("OK: 0 failing case(s)")
