@@ -128,7 +128,7 @@ jobs:
           python-version: "3.12"
       - name: the role's file
         id: plan
-        uses: lunareng/airlock-actions/agent/plan@553c56aa4e1c55968f357c9f085a680079b28e9a # routine signals by their file; retained source/agent-routine-553c56a
+        uses: lunareng/airlock-actions/agent/plan@43368020844ca9adbd1af740be618410d0988d92 # routines by their file, and the needs-owner ask; retained source/agent-asks-4336802
         with:
           role: ${{ inputs.role }}
           signal: ${{ inputs.signal }}
