@@ -151,7 +151,7 @@ again = mk(45, AGENT, "2. And the voided ones?\n<!-- api-engineer:asks -->", "20
 assert answer_plan(ask, [owner_reply, done, again], "acme-owner", {AGENT}) is None, "an answer older than the role's latest ask has been read"
 later = mk(46, "acme-owner", "2 no", "2026-11-10T13:00:00Z")
 assert answer_plan(ask, [owner_reply, done, again, later], "acme-owner", {AGENT})["id"] == 46, "the answer to the new ask starts it again"
-assert answers_label({}) is None and answers_label({"answers": True}) == "needs-owner" and answers_label({"answers": {"label": "ask"}}) == "ask"
+assert answers_label({}) is None and answers_label({"answers": True}) == "needs-owner" and answers_label({"answers": False}) is None
 print("ok  answers to an agent's question")
 
 from datetime import datetime, timezone  # noqa: E402
@@ -538,8 +538,8 @@ _p = lambda **kw: config_problems({**RCFG, **kw})  # noqa: E731
 assert any("other/api is not a repository of acme" in p for p in _p(reviews=[*RCFG["reviews"], "other/api"])), "one tenant's router never reads another's repos"
 assert any("not a list" in p for p in _p(product_bugs=["acme/api"])), "the old list shape of product_bugs"
 assert any("digest_answers names the role" in p for p in _p(digest_answers=True)), "digest_answers needs its role"
-assert any("`answers` is true, false or {label" in p for p in _p(answers={"labels": "x"})), "answers takes only a label"
-assert not any("answers" in p for p in _p(answers=True)) and not any("answers" in p for p in _p(answers={"label": "needs-owner"}))
+assert any("`answers` is true or false" in p for p in _p(answers={"label": "ask"})), "one label: the prompt and the dashboard read needs-owner"
+assert not any("answers" in p for p in _p(answers=True)) and not any("answers" in p for p in _p(answers=False))
 assert any("unknown key `tool_request`" in p for p in _p(tool_request=["acme/api"])), "a typo is a problem, not a rule turned off"
 assert any("`tool_requests` has no value" in p for p in _p(tool_requests=None)), "a key with no value is a problem, not a TypeError"
 assert any("`reviews` is a list" in p for p in _p(reviews="acme/api")), "a string where a list goes"

@@ -42,7 +42,7 @@ Rules (router.yaml says where each applies):
                 with the issue as its signal, once per comment (a marker comment records which), and only for a
                 comment newer than the role's latest ask on that issue. Without it an answered question waited for
                 the role's next scheduled run, or was never read (autonomy#149). Repos: `reviews`; on with
-                `answers: true` (or `{label: <name>}` for another label than needs-owner).
+                `answers: true`. The label is always needs-owner: the role prompt and Airlock's dashboard read it too.
   ci_main       A failing workflow on a repo's main (latest completed push or scheduled run) gets one open issue per workflow,
                 `CI: <workflow> failing on main`, labelled ci-failure + type:bug. When the latest run of that
                 workflow on main is green again, the router closes its own issue with a comment. Decided
@@ -195,13 +195,9 @@ def digest_answer_plan(comments: list[dict], owner: str) -> dict | None:
 
 
 def answers_label(cfg: dict) -> str | None:
-    """The label the answer rule reads (router.yaml answers: true, or {label: <name>}), or None while it is off."""
-    a = cfg.get("answers")
-    if a is True:
-        return "needs-owner"
-    if isinstance(a, dict):
-        return a.get("label") or "needs-owner"
-    return None
+    """The label the answer rule reads (router.yaml answers: true), or None while it is off. It is always needs-owner,
+    the label the role prompt (agent/plan.py) tells a role to ask under and Airlock's Questions for you reads."""
+    return "needs-owner" if cfg.get("answers") is True else None
 
 
 def answer_plan(issue: dict, comments: list[dict], owner: str, logins: set[str]) -> dict | None:
@@ -630,9 +626,8 @@ def shape_problems(cfg: dict) -> list[str]:
     if da and not (isinstance(da, dict) and isinstance(da.get("role"), str) and da["role"]):
         out.append("router.yaml: digest_answers names the role its answers start: {role: <role>}")
     an = cfg.get("answers")
-    if an is not None and not isinstance(an, bool) and not (
-            isinstance(an, dict) and set(an) <= {"label"} and isinstance(an.get("label"), str) and an["label"]):
-        out.append("router.yaml: `answers` is true, false or {label: <name>}")
+    if an is not None and not isinstance(an, bool):
+        out.append("router.yaml: `answers` is true or false")
     dl = cfg.get("delivered")
     if dl is not None and not isinstance(dl, bool) and not (
             isinstance(dl, dict) and set(dl) <= {"backfill"} and isinstance(dl.get("backfill"), list) and len(dl["backfill"]) == 2
