@@ -201,7 +201,7 @@ def answers_label(cfg: dict) -> str | None:
     return "needs-owner" if cfg.get("answers") is True else None
 
 
-def answer_plan(issue: dict, comments: list[dict], owner: str, logins: set[str], who=None) -> dict | None:
+def answer_plan(issue: dict, comments: list[dict], owner: str, logins: set[str], who=None, routers=None) -> dict | None:
     """The owner's comment that answers an agent's question on a needs-owner issue, and the role it starts, or None.
     The question is an issue an agent opened (its author is a role's login) whose body carries `<!-- <role>:asks -->`;
     that role is the one started, and only if the issue's author is one of that role's own logins (`who`, role_logins
@@ -212,8 +212,11 @@ def answer_plan(issue: dict, comments: list[dict], owner: str, logins: set[str],
     Anyone who may edit issues can rewrite a body or a comment, so each carries its edits (`edited`, from with_edits:
     None when never edited, else {"at", "by"}); one without them is unknown and nothing is started. An ask counts from
     its last edit, so an answer written before the question it would now be read with never dispatches, and an answer
-    someone other than the owner edited never does (lunareng/airlock-actions#72 security review)."""
+    someone other than the owner edited never does (lunareng/airlock-actions#72 security review). A dispatch marker
+    counts only from the router's own logins (`routers`, router_logins by default), so nobody else's comment can mark
+    an answer as already started."""
     who = who or role_logins
+    routers = router_logins() if routers is None else routers
     author = (issue.get("user") or {}).get("login", "")
     if author not in logins or "edited" not in issue:
         return None
@@ -235,7 +238,8 @@ def answer_plan(issue: dict, comments: list[dict], owner: str, logins: set[str],
             if "edited" not in c:
                 return None
             asked = max(asked, since(c))
-    done = {int(x) for c in comments for x in ANSWER_MARK_RE.findall(c.get("body") or "")}
+    done = {int(x) for c in comments if (c.get("user") or {}).get("login") in routers
+            for x in ANSWER_MARK_RE.findall(c.get("body") or "")}
     answers = [c for c in comments if (c.get("user") or {}).get("login") == owner and ts(c["created_at"]) > asked]
     if not answers:
         return None

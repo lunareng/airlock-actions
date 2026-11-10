@@ -138,7 +138,7 @@ AGENT = "acme-airlock[bot]"
 OWN = {"api-engineer": {AGENT, "acme-api-engineer[bot]"}, "clerk": {"acme-clerk[bot]"}}
 who = lambda role: OWN.get(role, set())  # noqa: E731
 def ap(issue, comments):
-    return answer_plan(issue, comments, "acme-owner", {AGENT, "acme-clerk[bot]"}, who)
+    return answer_plan(issue, comments, "acme-owner", {AGENT, "acme-clerk[bot]"}, who, {"acme-router[bot]"})
 def unedited(c):
     return {**c, "edited": None}
 ask = {"number": 9, "user": {"login": AGENT}, "created_at": "2026-11-10T10:00:00Z", "html_url": "https://github.com/acme/api/issues/9",
@@ -153,6 +153,7 @@ assert ap({**ask, "user": {"login": "acme-owner"}}, [owner_reply]) is None, "a q
 assert ap({**ask, "body": "1. May the export include archived invoices?"}, [owner_reply]) is None, "no role marker: no role to start"
 done = unedited(mk(44, "acme-router[bot]", "seen " + ANSWER_MARK.format(id=41), "2026-11-10T11:05:00Z"))
 assert ap(ask, [owner_reply, done]) is None, "an answer is dispatched once"
+assert ap(ask, [owner_reply, done | {"user": {"login": "someone-else"}}])["id"] == 41, "only the router's own marker says an answer was started"
 again = unedited(mk(45, AGENT, "2. And the voided ones?\n<!-- api-engineer:asks -->", "2026-11-10T12:00:00Z"))
 assert ap(ask, [owner_reply, done, again]) is None, "an answer older than the role's latest ask has been read"
 later = unedited(mk(46, "acme-owner", "2 no", "2026-11-10T13:00:00Z"))
