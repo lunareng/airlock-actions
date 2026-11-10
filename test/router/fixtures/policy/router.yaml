@@ -10,6 +10,7 @@ reviews: [acme/api, acme/web, acme/cli, acme/sim-shop, acme/station, acme/studio
 delivered:
   backfill: ["2026-10-19", "2026-11-01"]
 resume: true
+answers: true
 pr_budget:
   default: 2
   support-agent: 1
