@@ -132,6 +132,28 @@ assert digest_answer_plan([c1, mark, c5], "acme-owner")["id"] == 5, "a later ans
 assert digest_answer_plan([mk(6, "acme-owner", "all yes", "2026-10-30T14:00:00Z")], "acme-owner")["id"] == 6
 print("ok  digest answers")
 
+# The answer rule (autonomy#149): the owner's comment on an agent's needs-owner question starts the asking role again.
+from router import answer_plan, answers_label, ANSWER_MARK  # noqa: E402
+AGENT = "acme-airlock[bot]"
+ask = {"number": 9, "user": {"login": AGENT}, "created_at": "2026-11-10T10:00:00Z", "html_url": "https://github.com/acme/api/issues/9",
+       "body": "1. May the export include archived invoices?\n<!-- api-engineer:asks -->"}
+owner_reply = mk(41, "acme-owner", "1 yes", "2026-11-10T11:00:00Z")
+p = answer_plan(ask, [owner_reply], "acme-owner", {AGENT})
+assert p and p["id"] == 41 and p["role"] == "api-engineer" and p["signal"] == ask["html_url"], p
+assert answer_plan(ask, [mk(42, "someone-else", "1 yes", "2026-11-10T11:00:00Z")], "acme-owner", {AGENT}) is None, "only the owner's answer starts the role"
+assert answer_plan(ask, [mk(43, AGENT, "still waiting", "2026-11-10T11:00:00Z")], "acme-owner", {AGENT}) is None, "an agent's own comment is no answer"
+assert answer_plan(ask, [], "acme-owner", {AGENT}) is None, "no answer yet: nothing to start"
+assert answer_plan({**ask, "user": {"login": "acme-owner"}}, [owner_reply], "acme-owner", {AGENT}) is None, "a question a person opened isn't an agent's to resume"
+assert answer_plan({**ask, "body": "1. May the export include archived invoices?"}, [owner_reply], "acme-owner", {AGENT}) is None, "no role marker: no role to start"
+done = mk(44, "acme-router[bot]", "seen " + ANSWER_MARK.format(id=41), "2026-11-10T11:05:00Z")
+assert answer_plan(ask, [owner_reply, done], "acme-owner", {AGENT}) is None, "an answer is dispatched once"
+again = mk(45, AGENT, "2. And the voided ones?\n<!-- api-engineer:asks -->", "2026-11-10T12:00:00Z")
+assert answer_plan(ask, [owner_reply, done, again], "acme-owner", {AGENT}) is None, "an answer older than the role's latest ask has been read"
+later = mk(46, "acme-owner", "2 no", "2026-11-10T13:00:00Z")
+assert answer_plan(ask, [owner_reply, done, again, later], "acme-owner", {AGENT})["id"] == 46, "the answer to the new ask starts it again"
+assert answers_label({}) is None and answers_label({"answers": True}) == "needs-owner" and answers_label({"answers": {"label": "ask"}}) == "ask"
+print("ok  answers to an agent's question")
+
 from datetime import datetime, timezone  # noqa: E402
 from router import DELIVERED_MARK, delivered_plan, delivered_since, signal_refs  # noqa: E402
 
@@ -516,6 +538,8 @@ _p = lambda **kw: config_problems({**RCFG, **kw})  # noqa: E731
 assert any("other/api is not a repository of acme" in p for p in _p(reviews=[*RCFG["reviews"], "other/api"])), "one tenant's router never reads another's repos"
 assert any("not a list" in p for p in _p(product_bugs=["acme/api"])), "the old list shape of product_bugs"
 assert any("digest_answers names the role" in p for p in _p(digest_answers=True)), "digest_answers needs its role"
+assert any("`answers` is true, false or {label" in p for p in _p(answers={"labels": "x"})), "answers takes only a label"
+assert not any("answers" in p for p in _p(answers=True)) and not any("answers" in p for p in _p(answers={"label": "needs-owner"}))
 assert any("unknown key `tool_request`" in p for p in _p(tool_request=["acme/api"])), "a typo is a problem, not a rule turned off"
 assert any("`tool_requests` has no value" in p for p in _p(tool_requests=None)), "a key with no value is a problem, not a TypeError"
 assert any("`reviews` is a list" in p for p in _p(reviews="acme/api")), "a string where a list goes"

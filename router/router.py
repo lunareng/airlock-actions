@@ -37,6 +37,12 @@ Rules (router.yaml says where each applies):
                 that answers proposals ("1 yes, 2 no") starts router.yaml's digest_answers.role with that comment as
                 its signal, once per comment (a marker comment records which). That role writes each answer into
                 a decisions log.
+  answer        The human owner's comment on an open `needs-owner` issue an agent opened to ask a question (its body
+                ends with the role's `<!-- <role>:asks -->` marker, the role prompt says how) starts that role again
+                with the issue as its signal, once per comment (a marker comment records which), and only for a
+                comment newer than the role's latest ask on that issue. Without it an answered question waited for
+                the role's next scheduled run, or was never read (autonomy#149). Repos: `reviews`; on with
+                `answers: true` (or `{label: <name>}` for another label than needs-owner).
   ci_main       A failing workflow on a repo's main (latest completed push or scheduled run) gets one open issue per workflow,
                 `CI: <workflow> failing on main`, labelled ci-failure + type:bug. When the latest run of that
                 workflow on main is green again, the router closes its own issue with a comment. Decided
@@ -110,6 +116,9 @@ REVIEW_MARK = "<!-- router:review-dispatch id={id} -->"
 REVIEW_MARK_RE = re.compile(r"<!-- router:review-dispatch id=(\d+) -->")
 DIGEST_MARK = "<!-- router:digest-answer id={id} -->"
 DIGEST_MARK_RE = re.compile(r"<!-- router:digest-answer id=(\d+) -->")
+ANSWER_MARK = "<!-- router:answer id={id} -->"
+ANSWER_MARK_RE = re.compile(r"<!-- router:answer id=(\d+) -->")
+ASKS_RE = re.compile(r"<!-- ([a-z0-9][a-z0-9-]{0,62}):asks -->")  # an agent's question on an issue (the role prompt)
 DELIVERED_MARK = "<!-- router:delivered pr={pr} -->"
 RESUME_MARK = "<!-- router:resume role={role} -->"
 DISPATCH_MARK = "<!-- router:dispatch role={role} -->"
@@ -183,6 +192,42 @@ def digest_answer_plan(comments: list[dict], owner: str) -> dict | None:
         if ANSWER_RE.search(c.get("body") or ""):
             return {"id": c["id"], "signal": c.get("html_url", ""), "at": c["created_at"]}
     return None
+
+
+def answers_label(cfg: dict) -> str | None:
+    """The label the answer rule reads (router.yaml answers: true, or {label: <name>}), or None while it is off."""
+    a = cfg.get("answers")
+    if a is True:
+        return "needs-owner"
+    if isinstance(a, dict):
+        return a.get("label") or "needs-owner"
+    return None
+
+
+def answer_plan(issue: dict, comments: list[dict], owner: str, logins: set[str]) -> dict | None:
+    """The newest comment by `owner` on an agent's question that came after the role's latest ask and has no dispatch yet.
+
+    The question is an issue an agent opened (its author is a role's login) whose body carries `<!-- <role>:asks -->`;
+    that role is the one started. A later ask is a comment of the role's own with the same marker. Comments by anyone
+    but the owner never dispatch, and nor does one older than the latest ask: that one has been read."""
+    if (issue.get("user") or {}).get("login", "") not in logins:
+        return None
+    m = ASKS_RE.search(issue.get("body") or "")
+    if not m:
+        return None
+    role = m.group(1)
+    asked = ts(issue["created_at"])
+    for c in comments:
+        if (c.get("user") or {}).get("login", "") in logins and f"<!-- {role}:asks -->" in (c.get("body") or ""):
+            asked = max(asked, ts(c["created_at"]))
+    done = {int(x) for c in comments for x in ANSWER_MARK_RE.findall(c.get("body") or "")}
+    answers = [c for c in comments if (c.get("user") or {}).get("login") == owner and ts(c["created_at"]) > asked]
+    if not answers:
+        return None
+    newest = max(answers, key=lambda c: c["created_at"])
+    if newest["id"] in done:
+        return None
+    return {"id": newest["id"], "role": role, "signal": issue.get("html_url", ""), "at": newest["created_at"]}
 
 
 def agent_logins(config: Path | None = None, roles_dir: Path | None = None) -> set[str]:
@@ -513,7 +558,7 @@ def unwritable_repos(cfg: dict) -> list[str]:
 
 
 KNOWN_KEYS = {"product_bugs", "tool_requests", "tool_request_label", "reviews", "delivered", "resume", "pr_budget", "pr_waiting_budget",
-              "digest_answers", "override", "deployer_login", "clock_login", "gate_rerun", "run_failed", "ci_main", "follow_through"}
+              "digest_answers", "answers", "override", "deployer_login", "clock_login", "gate_rerun", "run_failed", "ci_main", "follow_through"}
 
 
 def is_date(d) -> bool:
@@ -584,6 +629,10 @@ def shape_problems(cfg: dict) -> list[str]:
     da = cfg.get("digest_answers")
     if da and not (isinstance(da, dict) and isinstance(da.get("role"), str) and da["role"]):
         out.append("router.yaml: digest_answers names the role its answers start: {role: <role>}")
+    an = cfg.get("answers")
+    if an is not None and not isinstance(an, bool) and not (
+            isinstance(an, dict) and set(an) <= {"label"} and isinstance(an.get("label"), str) and an["label"]):
+        out.append("router.yaml: `answers` is true, false or {label: <name>}")
     dl = cfg.get("delivered")
     if dl is not None and not isinstance(dl, bool) and not (
             isinstance(dl, dict) and set(dl) <= {"backfill"} and isinstance(dl.get("backfill"), list) and len(dl["backfill"]) == 2
@@ -1281,6 +1330,27 @@ def main() -> int:
                 gh.write("POST", f"repos/{POLICY_REPO}/issues/{n}/comments", {"body": f"Answers seen; the `{clerk}` role is recording them (signal = that comment). It replies here with the decisions-log PRs. {DIGEST_MARK.format(id=plan['id'])}" + FOOTER})
                 report["dispatched"].append(f"{short}#{n} digest answers -> {clerk}")
                 report["latency_hours"].append(round((now - ts(plan["at"])).total_seconds() / 3600, 1))
+
+    label = answers_label(cfg)
+    if label and owner:
+        for repo in (cfg.get("reviews") or []):
+            with guarded(f"answer {repo}"):
+                ensure_labels(repo, {label})  # so a role's `gh issue create --label` finds it
+                for issue in gh.get(f"repos/{repo}/issues", state="open", labels=label, per_page=100):
+                    if "pull_request" in issue:
+                        continue
+                    n = issue["number"]
+                    plan = answer_plan(issue, gh.get(f"repos/{repo}/issues/{n}/comments", per_page=100), owner, logins)
+                    if not plan or not role_file(plan["role"]).get("run"):
+                        continue
+                    role = plan["role"]
+                    if role in started or role_busy(role):
+                        continue  # one start per role per pass; a run already going is left alone, and the next pass looks again
+                    start_with_mark(repo, n, role, dispatch_inputs(plan["signal"], "answer", repo, n),
+                                    f"Answer seen; the `{role}` role is starting on it (signal = this issue). It acts on the answer and says here what it did. {ANSWER_MARK.format(id=plan['id'])}" + FOOTER)
+                    report["dispatched"].append(f"{repo}#{n} answer -> {role}")
+                    started.add(role)
+                    report["latency_hours"].append(round((now - ts(plan["at"])).total_seconds() / 3600, 1))
 
     for repo, product in (cfg.get("ci_main") or {}).items():
         with guarded(f"ci_main {repo}"):
