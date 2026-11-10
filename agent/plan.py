@@ -63,6 +63,16 @@ if writes.get("pull_requests"):
         "to its branch (`git commit --allow-empty -m \"Re-review the updated description\"`, then push); every later "
         "edit needs another push after it. If you can't push, say on the pull request that its description changed "
         "after its last review; never call it reviewed.\n")
+if "create" in (writes.get("issues") or []):
+    # One place for a question only the human owner can answer (lunareng/autonomy#149): an issue the router's answer rule
+    # watches and the dashboard's Waiting on you lists, by its label and this role's marker.
+    prompt += (
+        "When you need a decision only the human owner can make before you can go on (scope, money, access, a policy "
+        "change), ask on GitHub, never only in a board post or a pull request body: open one issue in the repository "
+        f"the work is in, labelled needs-owner, titled with the decision, its body one yes/no question per numbered "
+        f"line, ending with <!-- {role}:asks -->. Then leave that work and go on with anything else. The owner's "
+        "answer on that issue starts you again with the issue as your signal: act on it and say on the issue what "
+        f"you did. To ask again on the same issue, comment with the new question and end it with <!-- {role}:asks -->.\n")
 signal = os.environ.get("SIGNAL", "")
 # A signal reaches the prompt only in a shape nobody can write instructions in (airlock-actions#29): an issue or pull
 # request URL in the run's own organization, or a routine the policy repo itself defines. A routine is a name, never

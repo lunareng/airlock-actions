@@ -10,13 +10,15 @@ the role that owns the work is started with the signal:
 | `review` | A person's review on an agent's open PR (changes requested, an inline comment, or a comment that @-mentions the agent, newer than the head commit) starts the owning role, once per newest comment. |
 | `resume` | A `tool-request` a role deferred for its PR budget (`pr_budget`) starts the role again once one of its PRs closes. |
 | `digest_answer` | The human owner's "1 yes, 2 no" on an open `digest` issue in the policy repo starts `digest_answers.role`. |
+| `answer` | The human owner's comment on an open `needs-owner` issue an agent opened to ask a question (its body ends with `<!-- <role>:asks -->`) starts that role with the issue as its signal, once per comment newer than the role's latest ask. Repos: `reviews`. On with `answers: true`, or `answers: {label: <name>}` for another label. The router creates the label in each repo. |
 | `ci_main` | A failing workflow on a repo's main gets one `CI: <workflow> failing on main` issue; the router closes it when main is green again. |
 | `delivered` | A merged PR whose `## Signal` names an open `tool-request` without `Closes` gets one comment (and `delivered?` when it named no keyword). |
 | `run_failed` | A failing role workflow (`role-*.yml`) gets one `Role run: <role> failing` issue, a comment per further failure, the human owner mentioned at the third in a row; closed on the next success. |
 | `override` | A PR merged over a FAIL `claude-review` verdict gets one comment asking whoever merged it for `Override: <one line>`. |
 
 Every role dispatch also sends `reason`, the rule and its target, which Airlock records as why the run was started:
-`tool-request on acme/cli#5`, `review on acme/api#12`, `pr slot freed on acme/cli#5`, `digest answer on acme/policy#40`.
+`tool-request on acme/cli#5`, `review on acme/api#12`, `pr slot freed on acme/cli#5`, `digest answer on acme/policy#40`,
+`answer on acme/api#9`.
 | `gate_rerun` | A commit on the policy repo's main that changes what the gate scores by re-runs `autonomy-gate` on the open PRs it touches. |
 
 It writes nothing but issues, labels, comments, role dispatches and gate re-runs, and every rule checks GitHub
