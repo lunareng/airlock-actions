@@ -5,3 +5,5 @@ identity:
   github_login: "acme-ops-engineer[bot]"
 writes:
   repos: [acme/k8s, acme/infra]
+run:
+  model: sonnet  # a role with a run block is one the answer rule may start

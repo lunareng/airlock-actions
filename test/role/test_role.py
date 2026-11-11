@@ -166,6 +166,21 @@ for signal, kept in [("routine:weekly", True), ("routine:monthly", False), ("rou
     if kept:
         assert prompt.endswith("Lead with this signal: routine:weekly. This run is that routine: read roles/triage/routines/weekly.md and follow it as your task."), prompt
 print("ok  a routine the policy repo defines leads the prompt by its file; any other routine signal stays out with the same warning")
+
+# A role that may open issues is told how to ask the human owner (lunareng/autonomy#149); one that may not isn't.
+ROLE_ISSUES = yaml.safe_load(ROLE)
+r, o, tmp = step(PLAN, repo, ROLE="triage", OWNER="acme", POLICY_REPO="acme/policy")
+prompt = Path(tmp, "prompt.txt").read_text()
+asks = "create" in ((ROLE_ISSUES.get("writes") or {}).get("issues") or [])
+assert ("labelled needs-owner" in prompt and "<!-- triage:asks -->" in prompt) is asks, (asks, prompt)
+for issues, told in [(["create", "comment"], True), (["comment"], False), (None, False)]:
+    doc = dict(ROLE_ISSUES)
+    doc["writes"] = {**(doc.get("writes") or {}), "issues": issues}
+    r, o, tmp = step(PLAN, policy({"roles/triage/role.yaml": yaml.safe_dump(doc), "config.yaml": "airlock:\n  app_login: acme-airlock[bot]\n"}), ROLE="triage", OWNER="acme", POLICY_REPO="acme/policy")
+    assert r.returncode == 0, r.stdout + r.stderr
+    prompt = Path(tmp, "prompt.txt").read_text()
+    assert ("labelled needs-owner" in prompt and "<!-- triage:asks -->" in prompt) is told, (issues, prompt)
+print("ok  a role that may open issues is told to ask the owner on a needs-owner issue")
 r, o, tmp = step(PLAN, repo, ROLE="triage", OWNER="acme", POLICY_REPO="acme/policy", INPUT_PROVIDER="codex", AIRLOCK_CODEX_MODEL="gpt-example")
 assert r.returncode != 0 and "not yet supported" in r.stderr
 print("ok  provider/auth plans, Git write roots, validated signal URLs, and unsupported Codex tools")

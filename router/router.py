@@ -37,6 +37,13 @@ Rules (router.yaml says where each applies):
                 that answers proposals ("1 yes, 2 no") starts router.yaml's digest_answers.role with that comment as
                 its signal, once per comment (a marker comment records which). That role writes each answer into
                 a decisions log.
+  answer        The human owner's comment on an open `needs-owner` issue an agent opened to ask a question (its body
+                ends with the role's `<!-- <role>:asks -->` marker, the role prompt says how) starts that role again
+                with the issue as its signal, once per comment (a marker comment records which), and only for a
+                comment newer than the role's latest ask on that issue and its last edit, nobody but the owner
+                edited, on an issue one of that role's own logins opened. Without it an answered question waited
+                for the role's next scheduled run, or was never read (autonomy#149). Repos: `reviews`; on with
+                `answers: true`. The label is always needs-owner: the role prompt and Airlock's dashboard read it too.
   ci_main       A failing workflow on a repo's main (latest completed push or scheduled run) gets one open issue per workflow,
                 `CI: <workflow> failing on main`, labelled ci-failure + type:bug. When the latest run of that
                 workflow on main is green again, the router closes its own issue with a comment. Decided
@@ -110,6 +117,9 @@ REVIEW_MARK = "<!-- router:review-dispatch id={id} -->"
 REVIEW_MARK_RE = re.compile(r"<!-- router:review-dispatch id=(\d+) -->")
 DIGEST_MARK = "<!-- router:digest-answer id={id} -->"
 DIGEST_MARK_RE = re.compile(r"<!-- router:digest-answer id=(\d+) -->")
+ANSWER_MARK = "<!-- router:answer id={id} -->"
+ANSWER_MARK_RE = re.compile(r"<!-- router:answer id=(\d+) -->")
+ASKS_RE = re.compile(r"<!-- ([a-z0-9][a-z0-9-]{0,62}):asks -->")  # an agent's question on an issue (the role prompt)
 DELIVERED_MARK = "<!-- router:delivered pr={pr} -->"
 RESUME_MARK = "<!-- router:resume role={role} -->"
 DISPATCH_MARK = "<!-- router:dispatch role={role} -->"
@@ -183,6 +193,80 @@ def digest_answer_plan(comments: list[dict], owner: str) -> dict | None:
         if ANSWER_RE.search(c.get("body") or ""):
             return {"id": c["id"], "signal": c.get("html_url", ""), "at": c["created_at"]}
     return None
+
+
+def answers_label(cfg: dict) -> str | None:
+    """The label the answer rule reads (router.yaml answers: true), or None while it is off. It is always needs-owner,
+    the label the role prompt (agent/plan.py) tells a role to ask under and Airlock's Questions for you reads."""
+    return "needs-owner" if cfg.get("answers") is True else None
+
+
+def answer_plan(issue: dict, comments: list[dict], owner: str, logins: set[str], who=None, routers=None) -> dict | None:
+    """The owner's comment that answers an agent's question on a needs-owner issue, and the role it starts, or None.
+    The question is an issue an agent opened (its author is a role's login) whose body carries `<!-- <role>:asks -->`;
+    that role is the one started, and only if the issue's author is one of that role's own logins (`who`, role_logins
+    by default), so one role's App can't name another. A later ask is a comment of the role's own with the same
+    marker. Comments by anyone but the owner never dispatch, and nor does one older than the latest ask: that one has
+    been read.
+
+    Anyone who may edit issues can rewrite a body or a comment, so each carries its edits (`edited`, from with_edits:
+    None when never edited, else {"at", "by"}); one without them is unknown and nothing is started. An ask counts from
+    its last edit, so an answer written before the question it would now be read with never dispatches, and an answer
+    someone other than the owner edited never does (lunareng/airlock-actions#72 security review). A dispatch marker
+    counts only from the router's own logins (`routers`, router_logins by default), so nobody else's comment can mark
+    an answer as already started."""
+    who = who or role_logins
+    routers = router_logins() if routers is None else routers
+    author = (issue.get("user") or {}).get("login", "")
+    if author not in logins or "edited" not in issue:
+        return None
+    m = ASKS_RE.search(issue.get("body") or "")
+    if not m:
+        return None
+    role = m.group(1)
+    own = who(role)
+    if author not in own:
+        return None
+
+    def since(x: dict) -> datetime:
+        e = x["edited"]
+        return max(ts(x["created_at"]), ts(e["at"])) if e else ts(x["created_at"])
+
+    asked = since(issue)
+    for c in comments:
+        if (c.get("user") or {}).get("login", "") in own and f"<!-- {role}:asks -->" in (c.get("body") or ""):
+            if "edited" not in c:
+                return None
+            asked = max(asked, since(c))
+    done = {int(x) for c in comments if (c.get("user") or {}).get("login") in routers
+            for x in ANSWER_MARK_RE.findall(c.get("body") or "")}
+    answers = [c for c in comments if (c.get("user") or {}).get("login") == owner and ts(c["created_at"]) > asked]
+    if not answers:
+        return None
+    newest = max(answers, key=lambda c: c["created_at"])
+    if newest["id"] in done or "edited" not in newest or (newest["edited"] and newest["edited"]["by"] != owner):
+        return None
+    return {"id": newest["id"], "role": role, "signal": issue.get("html_url", ""), "at": newest["created_at"]}
+
+
+EDITS_QUERY = ("query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){issue(number:$n){"
+               "lastEditedAt editor{login} comments(first:100){totalCount nodes{databaseId lastEditedAt editor{login}}}}}}")
+
+
+def with_edits(issue: dict, comments: list[dict], data: dict | None) -> tuple[dict, list[dict]]:
+    """The issue and its comments, each with `edited` (None, or {"at", "by"}) from GitHub's GraphQL answer to
+    EDITS_QUERY. Left off wherever the answer doesn't say (no answer, over 100 comments, a comment it doesn't list),
+    so answer_plan treats that one as unknown."""
+    node = ((((data or {}).get("data") or {}).get("repository") or {}).get("issue")) or None
+    if not node or (node.get("comments") or {}).get("totalCount", 101) > 100:
+        return issue, comments
+
+    def edited(n: dict):
+        return {"at": n["lastEditedAt"], "by": (n.get("editor") or {}).get("login", "")} if n.get("lastEditedAt") else None
+
+    by_id = {n["databaseId"]: edited(n) for n in node["comments"].get("nodes") or [] if n.get("databaseId")}
+    out = [{**c, "edited": by_id[c["id"]]} if c.get("id") in by_id else c for c in comments]
+    return {**issue, "edited": edited(node)}, out
 
 
 def agent_logins(config: Path | None = None, roles_dir: Path | None = None) -> set[str]:
@@ -439,6 +523,18 @@ class GitHub:
                 return items
             page += 1
 
+    def graphql(self, query: str, **variables) -> dict:
+        """One GraphQL read (a POST, but it writes nothing, so it runs in dry runs too). Fails as get() does."""
+        args = ["gh", "api", "graphql", "-f", f"query={query}"]
+        for k, v in variables.items():
+            args += ["-F" if isinstance(v, int) else "-f", f"{k}={v}"]
+        for attempt in range(3):
+            out = subprocess.run(args, capture_output=True, text=True)
+            if out.returncode == 0:
+                return json.loads(out.stdout)
+            time.sleep(2 * (attempt + 1))
+        raise SystemExit(f"gh api graphql: {out.stderr.strip()}")
+
     def can_read(self, repo: str) -> bool:
         """Whether the router's App can read the repo. False only on a 404 (the App isn't installed there);
         any other failure still stops the pass, so an outage never reads as "skip everything"."""
@@ -513,7 +609,7 @@ def unwritable_repos(cfg: dict) -> list[str]:
 
 
 KNOWN_KEYS = {"product_bugs", "tool_requests", "tool_request_label", "reviews", "delivered", "resume", "pr_budget", "pr_waiting_budget",
-              "digest_answers", "override", "deployer_login", "clock_login", "gate_rerun", "run_failed", "ci_main", "follow_through"}
+              "digest_answers", "answers", "override", "deployer_login", "clock_login", "gate_rerun", "run_failed", "ci_main", "follow_through"}
 
 
 def is_date(d) -> bool:
@@ -584,6 +680,9 @@ def shape_problems(cfg: dict) -> list[str]:
     da = cfg.get("digest_answers")
     if da and not (isinstance(da, dict) and isinstance(da.get("role"), str) and da["role"]):
         out.append("router.yaml: digest_answers names the role its answers start: {role: <role>}")
+    an = cfg.get("answers")
+    if an is not None and not isinstance(an, bool):
+        out.append("router.yaml: `answers` is true or false")
     dl = cfg.get("delivered")
     if dl is not None and not isinstance(dl, bool) and not (
             isinstance(dl, dict) and set(dl) <= {"backfill"} and isinstance(dl.get("backfill"), list) and len(dl["backfill"]) == 2
@@ -1281,6 +1380,31 @@ def main() -> int:
                 gh.write("POST", f"repos/{POLICY_REPO}/issues/{n}/comments", {"body": f"Answers seen; the `{clerk}` role is recording them (signal = that comment). It replies here with the decisions-log PRs. {DIGEST_MARK.format(id=plan['id'])}" + FOOTER})
                 report["dispatched"].append(f"{short}#{n} digest answers -> {clerk}")
                 report["latency_hours"].append(round((now - ts(plan["at"])).total_seconds() / 3600, 1))
+
+    label = answers_label(cfg)
+    if label and owner:
+        for repo in (cfg.get("reviews") or []):
+            with guarded(f"answer {repo}"):
+                ensure_labels(repo, {label})  # so a role's `gh issue create --label` finds it
+                for issue in gh.get(f"repos/{repo}/issues", state="open", labels=label, per_page=100):
+                    if "pull_request" in issue:
+                        continue
+                    n = issue["number"]
+                    comments = gh.get(f"repos/{repo}/issues/{n}/comments", per_page=100)
+                    if not answer_plan({**issue, "edited": None}, [{**c, "edited": None} for c in comments], owner, logins):
+                        continue  # nothing to start even before edits are read: spare the GraphQL call
+                    o, r = repo.split("/", 1)
+                    plan = answer_plan(*with_edits(issue, comments, gh.graphql(EDITS_QUERY, o=o, r=r, n=n)), owner, logins)
+                    if not plan or not role_file(plan["role"]).get("run"):
+                        continue
+                    role = plan["role"]
+                    if role in started or role_busy(role):
+                        continue  # one start per role per pass; a run already going is left alone, and the next pass looks again
+                    start_with_mark(repo, n, role, dispatch_inputs(plan["signal"], "answer", repo, n),
+                                    f"Answer seen; the `{role}` role is starting on it (signal = this issue). It acts on the answer and says here what it did. {ANSWER_MARK.format(id=plan['id'])}" + FOOTER)
+                    report["dispatched"].append(f"{repo}#{n} answer -> {role}")
+                    started.add(role)
+                    report["latency_hours"].append(round((now - ts(plan["at"])).total_seconds() / 3600, 1))
 
     for repo, product in (cfg.get("ci_main") or {}).items():
         with guarded(f"ci_main {repo}"):
