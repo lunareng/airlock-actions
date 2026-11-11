@@ -4,12 +4,21 @@
 The job proves itself with its GitHub OIDC token, and Airlock answers a token that can read the tenant's policy repo
 and nothing else, for this repository's own `.github/workflows/autonomy-gate.yml` only. With it this reads, from the
 policy repo's default branch:
-  config.yaml                the owner, the agent markers, Airlock's App login and the tenant's floors
+  config.yaml                the owner, the agent markers and the tenant's floors
   repos/<this repo>.yaml     this repository's policy there, the stricter of it and AUTONOMY.yaml scores the PR
   roles/*/role.yaml          every role's bot login, so a PR any role opens is an agent's
-then hands the token back. It writes the gate's config (config.yaml with every role's login under
-agent_markers.logins, and Airlock's App login once any role is on Airlock; `floors` passes through as written) and
-this repository's policy file. A `floors` the gate can't read fails here, before anything is scored.
+then hands the token back. It writes the gate's config (config.yaml with every role's login and Airlock's App login
+under agent_markers.logins; `floors` passes through as written) and this repository's policy file. A `floors` the gate
+can't read fails here, before anything is scored.
+
+Airlock's App (lunareng/airlock#251). Every role on Airlock opens its pull requests as one App. Its login is Airlock's
+to say, not the tenant's: the read's answer names it (`appLogin`), and it goes into the gate's config as an agent login
+and as `airlock.app_login`, whatever config.yaml and the role files say (a role mid-switch to Airlock, or one whose
+file can't be read, still pushes as the App). So a pull request the App opened is an agent's on every tenant, with
+nothing written in config.yaml. `airlock.url` in the gate's config is the origin this read used. config.yaml may
+still carry an `airlock:` block, which other actions read: an `app_login` there must be Airlock's own, and any other
+fails the gate; a `url` there that isn't this origin is not used, and the log says so. An Airlock that answers no
+`appLogin` fails the gate: it never falls back to scoring the App's pull request as a person's.
 
   policy.py --airlock <origin> --repo-name <name> --config-out <file> --policy-out <file>
     Exit 0: both written (no policy-out when the policy repo has no file for this repository).
@@ -37,6 +46,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from gate import FloorError, floors_of  # noqa: E402
 
 TOKEN = re.compile(r"[A-Za-z0-9_.~+/=-]{20,4096}")
+# A GitHub App's bot login: the App's slug, then [bot].
+APP_LOGIN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\[bot\]")
 REPO = re.compile(r"[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}")
 NAME = re.compile(r"[A-Za-z0-9._-]{1,100}")
 ROLE_FILE = re.compile(r"roles/[A-Za-z0-9._-]{1,100}/role\.yaml")
@@ -106,16 +117,30 @@ def oidc(audience: str) -> str:
     return value
 
 
-def read_grant(airlock: str) -> tuple[str, str]:
+def read_grant(airlock: str) -> tuple[str, dict]:
+    """The read's token, masked, and Airlock's whole answer. The answer is checked by granted(), after the caller holds
+    the token: whatever is wrong with the rest of it, the token is still handed back."""
     req = urllib.request.Request(f"{airlock}/v1/read", method="POST", headers={"Authorization": f"Bearer {oidc(airlock)}"})
     a = json.loads(_call(req, "Airlock"))
-    token, repo = a.get("token") or "", a.get("repository") or ""
+    if not isinstance(a, dict):
+        raise Stop("Airlock's answer isn't one the gate can read")
+    token = a.get("token") or ""
     if not isinstance(token, str) or not TOKEN.fullmatch(token):
         raise Stop(f"Airlock refused the policy read: {_line(a.get('reason'))} ({_line(a.get('message'))})")
     print(f"::add-mask::{token}", flush=True)
+    return token, a
+
+
+def granted(answer: dict) -> tuple[str, str]:
+    """(the policy repository, Airlock's App login) from the read's answer. Both are Airlock's to say."""
+    repo, app = answer.get("repository") or "", answer.get("appLogin")
     if not isinstance(repo, str) or not REPO.fullmatch(repo):
         raise Stop("Airlock's answer names no policy repository")
-    return token, repo
+    if not isinstance(app, str) or not APP_LOGIN.fullmatch(app):
+        # Never a reason to go on without it: with no App login, the App's pull request would score as a person's.
+        raise Stop("Airlock's answer doesn't name its App (appLogin), so the gate can't tell which pull requests "
+                   "Airlock's App opened; this gate needs an Airlock that answers it (lunareng/airlock#251)")
+    return repo, app
 
 
 def github(token: str, path: str, raw: bool = False):
@@ -135,19 +160,48 @@ def maybe_file(token: str, repo: str, path: str) -> str | None:
         raise
 
 
-def gate_config(config: dict, roles: list[dict]) -> dict:
-    """config.yaml with every role's bot login as an agent marker, and Airlock's App login once a role is on it."""
+def airlock_block(config: dict, app_login: str, origin: str) -> tuple[dict, str | None]:
+    """(the gate's `airlock` block, a note for the log). The App's login and the stamp's origin are Airlock's: the login
+    the read answered, the origin the read used. config.yaml's own block is held to them (lunareng/airlock#251): an
+    app_login that isn't Airlock's is a mistake the gate fails closed on, since the tenant meant some other login to be
+    the App's; a url that isn't this origin is not used, and the note says so. Its other keys pass through."""
+    block = config.get("airlock")
+    if block is None:
+        block = {}
+    if not isinstance(block, dict):
+        raise Stop("config.yaml's airlock is not a mapping; take it out (the gate learns Airlock's App from Airlock itself)")
+    named = block.get("app_login")
+    if named is not None and named != app_login:
+        raise Stop(f"config.yaml's airlock.app_login is {_line(named)!r}, and Airlock's App is {app_login!r}; "
+                   "correct it or take it out (the gate learns Airlock's App from Airlock itself)")
+    note = None
+    url = block.get("url")
+    if url is not None and (not isinstance(url, str) or url.rstrip("/") != origin):
+        note = (f"config.yaml's airlock.url is {_line(url)!r}, which is not the Airlock this gate reads from ({origin}); "
+                f"the stamp is read from {origin}")
+    return {**block, "app_login": app_login, "url": origin}, note
+
+
+def gate_config(config: dict, roles: list[dict], app_login: str, origin: str) -> tuple[dict, str | None]:
+    """(the gate's config, a note for the log): config.yaml with every role's bot login and Airlock's App login as
+    agent markers, and the `airlock` block Airlock's own answer gives (airlock_block). The App's login is added
+    whether or not a role file says it is on Airlock: what a pull request's author is doesn't depend on a file the
+    tenant writes."""
     cfg = dict(config)
-    markers = dict(cfg.get("agent_markers") or {})
-    logins = set(markers.get("logins") or [])
+    markers = cfg.get("agent_markers")
+    if markers is None:
+        markers = {}
+    if not isinstance(markers, dict) or not isinstance(markers.get("logins") or [], list):
+        raise Stop("config.yaml's agent_markers is not a mapping with a list of logins")
+    markers = dict(markers)
+    logins = {l for l in markers.get("logins") or [] if isinstance(l, str)}
     logins |= {r["identity"]["github_login"] for r in roles
                if isinstance(r.get("identity"), dict) and isinstance(r["identity"].get("github_login"), str)}
-    app_login = (cfg.get("airlock") or {}).get("app_login")
-    if app_login and any(isinstance(r.get("identity"), dict) and r["identity"].get("key_store") == "airlock" for r in roles):
-        logins.add(app_login)
+    cfg["airlock"], note = airlock_block(cfg, app_login, origin)
+    logins.add(app_login)
     markers["logins"] = sorted(logins)
     cfg["agent_markers"] = markers
-    return cfg
+    return cfg, note
 
 
 def read_policy(token: str, repo: str, name: str) -> tuple[dict, list[dict], str | None]:
@@ -205,21 +259,26 @@ def main() -> int:
         return 1
     token = None
     try:
-        token, repo = read_grant(airlock)
+        token, answer = read_grant(airlock)
+        repo, app_login = granted(answer)
         config, roles, policy = read_policy(token, repo, a.repo_name)
+        cfg, note = gate_config(config, roles, app_login, airlock)
     except Stop as e:
         print(f"::error title=autonomy gate::{_line(e)}; no policy, no gate")
         return 1
     finally:
         if token:
             end(token)
+    if note:
+        print(f"::warning title=autonomy gate::{_line(note)}")
     with open(a.config_out, "w") as f:
-        yaml.safe_dump(gate_config(config, roles), f, sort_keys=False)
+        yaml.safe_dump(cfg, f, sort_keys=False)
     if policy is not None:
         with open(a.policy_out, "w") as f:
             f.write(policy)
     print(f"read {repo}: config.yaml, {len(roles)} role file(s), "
           + (f"repos/{a.repo_name}.yaml" if policy is not None else f"no repos/{a.repo_name}.yaml (AUTONOMY.yaml alone scores the PR)"))
+    print(f"Airlock's App is {app_login}: a pull request it opened is an agent's, and needs Airlock's stamp")
     return 0
 
 

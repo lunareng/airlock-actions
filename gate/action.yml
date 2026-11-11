@@ -4,8 +4,10 @@ description: >
   repo (the stricter of the two) and the policy repo's config.yaml floors, label it level:Lx,
   write the reasons to the job summary, and fail only for an agent-authored PR at L1/L2 that the human
   owner has not approved on its current commit (an APPROVED review on the head sha passes it, so the
-  caller runs on pull_request_review as well as pull_request). A PR Airlock's App opened also fails
-  unless Airlock's stamp credits a role with its head commit (or the owner approved that commit). At L1
+  caller runs on pull_request_review as well as pull_request). A PR Airlock's App opened is an agent's on
+  every tenant: Airlock names its App in the policy read (appLogin), so config.yaml needs nothing for it
+  (lunareng/airlock#251). It also fails unless Airlock's stamp credits a role with its head commit (or the
+  owner approved that commit); the stamp is read from the same Airlock, the airlock-url input. At L1
   auto-merge must be off, so a person merges, and the approval is enough unless the PR owes proof; then it
   needs a second key (autonomy#146): every `## Proof owed` item answered by the owner's `## Proof` comment. With
   config.yaml `separation_of_duties: required`, the approval doesn't count when the owner started the run that pushed
@@ -16,7 +18,7 @@ description: >
   checkout with fetch-depth 0.
 inputs:
   airlock-url:
-    description: Airlock's origin
+    description: Airlock's origin; the policy read and the head commit's stamp both come from it
     default: https://airlock.lunareng.com
   rerun-wait-seconds:
     description: on a review, how long to wait for a push-time run that is still going
@@ -113,6 +115,7 @@ runs:
     - name: which role pushed the head (Airlock's stamp; PRs Airlock's App opened only)
       shell: bash
       env:
+        AIRLOCK: ${{ inputs.airlock-url }}
         AUTHOR: ${{ github.event.pull_request.user.login }}
         OWNER_ID: ${{ github.repository_owner_id }}
         REPO_ID: ${{ github.event.repository.id }}
@@ -122,10 +125,14 @@ runs:
         # Every role on Airlock opens PRs as one App, so Airlock's stamp says which role pushed the commit
         # (lunareng/airlock, GET /v1/stamps). Its webhook usually lands before this job starts; wait a little
         # for it, then let gate.py fail the PR without one. Other authors skip this.
+        # The App's login is the one Airlock answered in the policy read, which policy.py wrote into the gate's
+        # config; the stamp is read from that same Airlock, this action's airlock-url, never from an origin
+        # config.yaml names (lunareng/airlock#251).
         rm -f "$RUNNER_TEMP/airlock-stamp.json"
-        read -r login url wait < <(python -I -c 'import yaml;a=yaml.safe_load(open("'"$RUNNER_TEMP"'/gate-config.yaml")).get("airlock") or {};print(a.get("app_login","-"),a.get("url","-"),a.get("stamp_wait_seconds",120))') || true
+        read -r login wait < <(python -I -c 'import yaml;a=yaml.safe_load(open("'"$RUNNER_TEMP"'/gate-config.yaml")).get("airlock") or {};w=a.get("stamp_wait_seconds",120);print(a.get("app_login") or "-",w if type(w) is int and 0<=w<=600 else 120)') || true
         [ -n "${login:-}" ] || exit 0
         [ "$AUTHOR" = "$login" ] || exit 0
+        url="${AIRLOCK%/}"
         deadline=$(( $(date +%s) + wait ))
         while :; do
           code="$(curl -sS -o "$RUNNER_TEMP/stamp.body" -w '%{http_code}' --max-time 10 "$url/v1/stamps/$OWNER_ID/$REPO_ID/$HEAD")" || true
