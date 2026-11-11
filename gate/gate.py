@@ -16,9 +16,10 @@ CLI (run inside the repo under test, on the PR head):
     A human-authored PR always exits 0: CODEOWNERS and branch protection route L1/L2 to the owner.
     --approved: the human owner's latest review on this very commit is APPROVED, which is "a human took
     it from here": the PR passes at L1/L2 too, so Matthew's approve-then-merge needs no bypass (api#1082).
-    --stamp-file: for a PR Airlock's App opened (config.yaml `airlock.app_login`), the JSON Airlock answered for
-    its head commit ({"role": ..., "reason": ...}, GET /v1/stamps); missing or without a role, the PR fails at
-    any level until the owner approves that commit (lunareng/airlock build step 3).
+    --stamp-file: for a PR Airlock's App opened (the gate config's `airlock.app_login`, which policy.py writes
+    from Airlock's own answer, never from the tenant's config.yaml: lunareng/airlock#251), the JSON Airlock
+    answered for its head commit ({"role": ..., "reason": ...}, GET /v1/stamps); missing or without a role, the
+    PR fails at any level until the owner approves that commit (lunareng/airlock build step 3).
     --pr-file: the PR as JSON ({"body", "auto_merge", "proofs": [the owner's comment and review bodies]}). At L1
     auto-merge is always off, so a person presses merge, and the owner's approval of the head commit is enough
     when the PR owes no proof (Matthew 2026-10-30: "a human approval is good enough"). When a person must act
@@ -46,7 +47,8 @@ Library, the L1 second key:
     an owner's `## Proof` comment answers (`1.` or `### 1`, with something after it). Ticks in the body count for
     nothing: the proof goes in a comment.
 
-Agent PRs are recognized by the author's login (config.yaml `agent_markers.logins`, every role's App), never by the branch.
+Agent PRs are recognized by the author's login (the gate config's `agent_markers.logins`: config.yaml's, every role's
+App, and Airlock's App as Airlock names it in the policy read), never by the branch.
 Every role on Airlock shares one App login, so for those PRs Airlock's stamp says which role pushed the commit.
 """
 import argparse
