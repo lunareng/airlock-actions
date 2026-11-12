@@ -132,6 +132,55 @@ assert digest_answer_plan([c1, mark, c5], "acme-owner")["id"] == 5, "a later ans
 assert digest_answer_plan([mk(6, "acme-owner", "all yes", "2026-10-30T14:00:00Z")], "acme-owner")["id"] == 6
 print("ok  digest answers")
 
+# The answer rule (autonomy#149): the owner's comment on an agent's needs-owner question starts the asking role again.
+from router import answer_plan, answers_label, with_edits, ANSWER_MARK  # noqa: E402
+AGENT = "acme-airlock[bot]"
+OWN = {"api-engineer": {AGENT, "acme-api-engineer[bot]"}, "clerk": {"acme-clerk[bot]"}}
+who = lambda role: OWN.get(role, set())  # noqa: E731
+def ap(issue, comments):
+    return answer_plan(issue, comments, "acme-owner", {AGENT, "acme-clerk[bot]"}, who, {"acme-router[bot]"})
+def unedited(c):
+    return {**c, "edited": None}
+ask = {"number": 9, "user": {"login": AGENT}, "created_at": "2026-11-10T10:00:00Z", "html_url": "https://github.com/acme/api/issues/9",
+       "body": "1. May the export include archived invoices?\n<!-- api-engineer:asks -->", "edited": None}
+owner_reply = unedited(mk(41, "acme-owner", "1 yes", "2026-11-10T11:00:00Z"))
+p = ap(ask, [owner_reply])
+assert p and p["id"] == 41 and p["role"] == "api-engineer" and p["signal"] == ask["html_url"], p
+assert ap(ask, [unedited(mk(42, "someone-else", "1 yes", "2026-11-10T11:00:00Z"))]) is None, "only the owner's answer starts the role"
+assert ap(ask, [unedited(mk(43, AGENT, "still waiting", "2026-11-10T11:00:00Z"))]) is None, "an agent's own comment is no answer"
+assert ap(ask, []) is None, "no answer yet: nothing to start"
+assert ap({**ask, "user": {"login": "acme-owner"}}, [owner_reply]) is None, "a question a person opened isn't an agent's to resume"
+assert ap({**ask, "body": "1. May the export include archived invoices?"}, [owner_reply]) is None, "no role marker: no role to start"
+done = unedited(mk(44, "acme-router[bot]", "seen " + ANSWER_MARK.format(id=41), "2026-11-10T11:05:00Z"))
+assert ap(ask, [owner_reply, done]) is None, "an answer is dispatched once"
+assert ap(ask, [owner_reply, done | {"user": {"login": "someone-else"}}])["id"] == 41, "only the router's own marker says an answer was started"
+again = unedited(mk(45, AGENT, "2. And the voided ones?\n<!-- api-engineer:asks -->", "2026-11-10T12:00:00Z"))
+assert ap(ask, [owner_reply, done, again]) is None, "an answer older than the role's latest ask has been read"
+later = unedited(mk(46, "acme-owner", "2 no", "2026-11-10T13:00:00Z"))
+assert ap(ask, [owner_reply, done, again, later])["id"] == 46, "the answer to the new ask starts it again"
+# Bound to the role and to the question as it stands (the #72 security review).
+assert ap({**ask, "user": {"login": "acme-clerk[bot]"}}, [owner_reply]) is None, "one role's App can't name another role"
+assert ap({**ask, "body": ask["body"].replace("api-engineer", "clerk")}, [owner_reply]) is None, "the shared App can't name a role that isn't on Airlock"
+assert ap({**ask, "edited": {"at": "2026-11-10T12:00:00Z", "by": "acme-api-engineer[bot]"}}, [owner_reply]) is None, "a question edited after the answer: that answer was to another text"
+assert ap({**ask, "edited": {"at": "2026-11-10T10:30:00Z", "by": AGENT}}, [owner_reply])["id"] == 41, "an edit before the answer is what was answered"
+assert ap(ask, [owner_reply | {"edited": {"at": "2026-11-10T11:30:00Z", "by": "acme-api-engineer[bot]"}}]) is None, "an answer someone else rewrote starts nothing"
+assert ap(ask, [owner_reply | {"edited": {"at": "2026-11-10T11:30:00Z", "by": "acme-owner"}}])["id"] == 41, "the owner may edit their own answer"
+assert ap(ask, [owner_reply, again | {"edited": {"at": "2026-11-10T13:30:00Z", "by": AGENT}}, later]) is None, "an ask comment edited after the answer"
+_ask = {k: v for k, v in ask.items() if k != "edited"}
+assert ap(_ask, [owner_reply]) is None, "edits unread: nothing starts"
+assert ap(ask, [mk(41, "acme-owner", "1 yes", "2026-11-10T11:00:00Z")]) is None, "an answer whose edits weren't read starts nothing"
+# with_edits merges GitHub's GraphQL answer, and leaves off whatever it doesn't say.
+_c = [mk(41, "acme-owner", "1 yes", "2026-11-10T11:00:00Z"), mk(47, AGENT, "x", "2026-11-10T11:10:00Z")]
+_g = {"data": {"repository": {"issue": {"lastEditedAt": "2026-11-10T10:05:00Z", "editor": {"login": AGENT}, "comments": {
+    "totalCount": 2, "nodes": [{"databaseId": 41, "lastEditedAt": None, "editor": None}]}}}}}
+_i, _cs = with_edits(_ask, _c, _g)
+assert _i["edited"] == {"at": "2026-11-10T10:05:00Z", "by": AGENT} and _cs[0]["edited"] is None and "edited" not in _cs[1], (_i, _cs)
+_g["data"]["repository"]["issue"]["comments"]["totalCount"] = 101
+assert "edited" not in with_edits(_ask, _c, _g)[0], "over 100 comments: unknown"
+assert "edited" not in with_edits(_ask, _c, None)[0] and "edited" not in with_edits(_ask, _c, {"data": {"repository": None}})[0]
+assert answers_label({}) is None and answers_label({"answers": True}) == "needs-owner" and answers_label({"answers": False}) is None
+print("ok  answers to an agent's question")
+
 from datetime import datetime, timezone  # noqa: E402
 from router import DELIVERED_MARK, delivered_plan, delivered_since, signal_refs  # noqa: E402
 
@@ -516,6 +565,8 @@ _p = lambda **kw: config_problems({**RCFG, **kw})  # noqa: E731
 assert any("other/api is not a repository of acme" in p for p in _p(reviews=[*RCFG["reviews"], "other/api"])), "one tenant's router never reads another's repos"
 assert any("not a list" in p for p in _p(product_bugs=["acme/api"])), "the old list shape of product_bugs"
 assert any("digest_answers names the role" in p for p in _p(digest_answers=True)), "digest_answers needs its role"
+assert any("`answers` is true or false" in p for p in _p(answers={"label": "ask"})), "one label: the prompt and the dashboard read needs-owner"
+assert not any("answers" in p for p in _p(answers=True)) and not any("answers" in p for p in _p(answers=False))
 assert any("unknown key `tool_request`" in p for p in _p(tool_request=["acme/api"])), "a typo is a problem, not a rule turned off"
 assert any("`tool_requests` has no value" in p for p in _p(tool_requests=None)), "a key with no value is a problem, not a TypeError"
 assert any("`reviews` is a list" in p for p in _p(reviews="acme/api")), "a string where a list goes"
@@ -576,6 +627,15 @@ _CI_RUN = {"name": "ci", "status": "completed", "conclusion": "failure", "update
 _DIGEST = {"number": 40, "title": "digest", "state": "open", "labels": [{"name": "digest"}]}
 _ANSWER = {"id": 77, "user": {"login": "acme-owner"}, "body": "1 yes", "created_at": "2026-10-30T10:00:00Z",
            "html_url": "https://github.com/acme/policy/issues/40#c77"}
+# Questions for the owner (the answer rule): one to answer, one whose App isn't the named role's, one edited after its answer.
+def _q(n, repo, login, role):
+    return {"number": n, "user": {"login": login}, "created_at": "2026-11-10T10:00:00Z", "labels": [{"name": "needs-owner"}],
+            "html_url": f"https://github.com/{repo}/issues/{n}", "body": f"1. Ship it?\n<!-- {role}:asks -->"}
+_QS = {"acme/policy": _q(12, "acme/policy", "acme-airlock[bot]", "policy-engineer"),
+       "acme/service": _q(13, "acme/service", "acme-airlock[bot]", "ops-engineer"),
+       "acme/k8s": _q(14, "acme/k8s", "acme-ops-engineer[bot]", "ops-engineer")}
+_QREPLY = {"id": 88, "user": {"login": "acme-owner"}, "body": "1 yes", "created_at": "2026-11-10T11:00:00Z"}
+_EDITED = {12: None, 14: "2026-11-10T12:00:00Z"}
 
 
 def _fake_gh(args, **kw):
@@ -600,6 +660,15 @@ def _fake_gh(args, **kw):
         out = [_DIGEST]
     elif base == "repos/acme/policy/issues/40/comments":
         out = [_ANSWER]
+    elif "labels=needs-owner" in q and base.endswith("/issues"):
+        out = [_QS[base[6:-7]]] if base[6:-7] in _QS else []
+    elif re.fullmatch(r"repos/acme/[a-z0-9-]+/issues/1[234]/comments", base):
+        out = [_QREPLY]
+    elif base == "graphql":
+        n = int(next(a[2:] for a in args if a.startswith("n=")))
+        at = _EDITED[n]
+        out = {"data": {"repository": {"issue": {"lastEditedAt": at, "editor": {"login": "acme-ops-engineer[bot]"} if at else None,
+               "comments": {"totalCount": 1, "nodes": [{"databaseId": 88, "lastEditedAt": None, "editor": None}]}}}}}
     elif base.count("/") == 2 and base.startswith("repos/"):
         out = {"full_name": base[6:]}
     else:
@@ -625,6 +694,11 @@ assert not any("-X" in a for a in _calls), "a dry run calls no write"
 _writes = _rep["writes"]
 assert "acme/cli#5 tool_request" in _rep["routed"] and "acme/cli#5 -> cli-engineer" in _rep["dispatched"], _rep
 assert "acme/api#9 product_bug" in _rep["routed"] and "policy#40 digest answers -> clerk" in _rep["dispatched"], _rep
+assert "acme/policy#12 answer -> policy-engineer" in _rep["dispatched"], _rep
+assert not any(d.startswith(("acme/service#13 answer", "acme/k8s#14 answer")) for d in _rep["dispatched"]), _rep
+assert sorted(next(a[2:] for a in c if a.startswith("n=")) for c in _calls if c[2] == "graphql") == ["12", "14"], \
+    "edits are read only for a question that would otherwise start a role; the shared App naming ops-engineer never gets that far"
+print("OK: the answer rule in a whole pass")
 assert any(w.startswith("POST repos/acme/policy/actions/workflows/role-cli-engineer.yml/dispatches") for w in _writes), _writes
 assert any(w.startswith("POST repos/acme/policy/actions/workflows/role-clerk.yml/dispatches") for w in _writes), _writes
 # Each role dispatch says why, for the run's record at Airlock: the rule and its target, beside the signal.
@@ -634,7 +708,7 @@ assert any(w.startswith("POST repos/acme/web/issues ") for w in _writes), "the f
 assert any(w.startswith("PATCH repos/acme/api/issues/9") and "Sim incident sim-shop#3" in w for w in _writes), _writes
 assert all(w.split()[1].startswith("repos/acme/") for w in _writes), _writes
 assert all(o == "acme" for w in _writes for o in re.findall(r"github\.com/([\w.-]+)/", w)), "every link it writes is in acme"
-assert all(a[2].startswith(("repos/acme/", "search/")) for a in _calls), "reads stay in acme"
+assert all(a[2].startswith(("repos/acme/", "search/")) or (a[2] == "graphql" and "o=acme" in a) for a in _calls), "reads stay in acme"
 print("OK: a dry-run pass on acme")
 
 # The action's own rules (CLAUDE.md, the org): every action pinned to a full commit sha, no expression inside a run

@@ -89,13 +89,20 @@ jobs:
 
 | Input | Default | |
 | --- | --- | --- |
-| `airlock-url` | `https://airlock.lunareng.com` | Airlock's origin. |
+| `airlock-url` | `https://airlock.lunareng.com` | Airlock's origin. The policy read and the head commit's stamp both come from it. |
 | `rerun-wait-seconds` | `300` | On a review, how long to wait for a push-time run still going. |
 
 | Output | |
 | --- | --- |
 | `level` | The PR's level, `L1` to `L4`. |
 | `passed` | `true` or `false` once the level is computed; empty if the gate stopped before. |
+
+### Airlock's App
+
+Every role on Airlock opens its PRs as one App. A PR that App opened is an agent's, in every repository of every tenant: it needs Airlock's stamp crediting a role with its head commit, and at L1 or L2 your owner's approval. Your `config.yaml` needs nothing for this. Airlock names its own App in the policy read (`appLogin` in `POST /v1/read`), and the gate takes the login from there and the stamp from the same Airlock (lunareng/airlock#251).
+
+- An Airlock that answers no `appLogin` fails the gate for every PR, with a message naming lunareng/airlock#251. The gate never falls back to scoring the App's PR as a person's.
+- `config.yaml` may still have an `airlock:` block, which other actions read. An `airlock.app_login` there must be Airlock's own App login; any other fails the gate. An `airlock.url` that isn't the `airlock-url` input is not used, and the log says so. `airlock.stamp_wait_seconds` (default 120, at most 600) is how long the gate waits for a stamp.
 
 ### Separation of duties
 
