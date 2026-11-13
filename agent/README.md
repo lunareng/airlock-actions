@@ -70,5 +70,9 @@ Codex usage does not yet enter Airlock's Claude telemetry totals.
 refresh persistence on failure, and checks cleanup and redaction. `python3 test/agent/test_guard.py` checks the
 command guard and budget. `node --test test/agent/codex-cli.test.mjs` drives the pinned real CLI against a local
 mock Responses API: an undeclared command is blocked and a declared Git commit succeeds inside its sandbox.
+`node --test test/agent/codex-mcp.test.mjs` drives the same CLI against a mock MCP server: a listed tool and a
+pattern-matched tool reach it with the role's session header, an unlisted tool is never offered, and a tool no
+pattern matches is blocked by the guard before it reaches the server. Declared servers are set to approve their
+tools, because `approval_policy = "never"` otherwise refuses every MCP call.
 It uses no provider credentials or paid inference. CI installs exactly the pinned Codex release for that test.
 Actual subscription smoke jobs remain an operator proof before rollout.

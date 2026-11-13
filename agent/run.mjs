@@ -35,7 +35,9 @@ export function codexConfig(plan, home, workspace) {
     const url = new URL(spec.url);
     if (url.protocol !== 'https:' || url.username || url.password) throw new Error('invalid MCP endpoint');
     const variable = `ROLE_MCP_${name.toUpperCase().replaceAll('-', '_')}_TOKEN`;
-    lines.push(`[mcp_servers.${toml(name)}]`, `url = ${toml(spec.url)}`, 'required = true');
+    // With approval_policy "never", Codex refuses every MCP call it would ask about. The role file already
+    // approved these tools; enabled_tools and the guard keep the rest out.
+    lines.push(`[mcp_servers.${toml(name)}]`, `url = ${toml(spec.url)}`, 'required = true', 'default_tools_approval_mode = "approve"');
     const tools = plan.tools?.[name] || [];
     if (!tools.length) throw new Error(`MCP ${name} has no allowed tools`);
     if (tools.every(t => !t.includes('*'))) lines.push(`enabled_tools = ${toml(tools)}`);
