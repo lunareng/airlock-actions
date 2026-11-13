@@ -77,13 +77,15 @@ signal = os.environ.get("SIGNAL", "")
 # A signal reaches the prompt only in a shape nobody can write instructions in (airlock-actions#29): an issue or pull
 # request URL in the run's own organization, or a routine the policy repo itself defines. A routine is a name, never
 # text: `routine:<name>` counts only when roles/<role>/routines/<name>.md is a regular file at this commit, and the
-# prompt names that file. Anything else stays out, as before.
+# prompt names that file. Anything else is left out with a warning, and never echoed, since the log is the run's record.
 routine = re.fullmatch(r"routine:([a-z0-9][a-z0-9-]{0,62})", signal)
 routine_file = f"roles/{role}/routines/{routine.group(1)}.md" if routine else ""
 if signal and re.fullmatch(r"https://github\.com/" + re.escape(owner) + r"/[A-Za-z0-9._-]+/(issues|pull)/[1-9][0-9]*", signal):
     prompt += "Lead with this signal: " + signal
 elif routine_file and os.path.isfile(routine_file) and not os.path.islink(routine_file):
     prompt += f"Lead with this signal: {signal}. This run is that routine: read {routine_file} and follow it as your task."
+elif signal:
+    print(f"::warning title=signal::the signal isn't an issue or pull request URL in {owner}, or a routine the policy repo defines; the run goes on without it")
 if selected['provider'] == 'codex':
     prompt += (" Use individual literal shell commands: no pipelines, redirection, command substitutions or multiline shell. "
                "Read files with cat, head, tail, rg, ls or sed -n START,ENDp. Other commands must match run.bash. "
