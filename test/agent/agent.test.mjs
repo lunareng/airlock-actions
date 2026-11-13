@@ -36,7 +36,7 @@ test('inactive model credentials and GitHub OIDC never reach the provider proces
 test('Codex config: sandbox, no interactive approvals, isolated hooks and MCP env references', () => {
   const p = { ...plan, tools: { board:['read','post'] }, mcp: { board:{url:'https://mcp.example/mcp'} } };
   const text = codexConfig(p, '/tmp/private-home', '/work');
-  for (const s of ['approval_policy = "never"', 'sandbox_mode = "workspace-write"', 'trust_level = "untrusted"', 'exclude_slash_tmp = true', 'matcher = ".*"', 'bearer_token_env_var = "ROLE_MCP_BOARD_TOKEN"', 'enabled_tools = ["read","post"]']) assert.ok(text.includes(s), s);
+  for (const s of ['approval_policy = "never"', 'sandbox_mode = "workspace-write"', 'trust_level = "untrusted"', 'exclude_slash_tmp = true', 'matcher = ".*"', 'bearer_token_env_var = "ROLE_MCP_BOARD_TOKEN"', 'enabled_tools = ["read","post"]', 'default_tools_approval_mode = "approve"']) assert.ok(text.includes(s), s);
   assert.ok(!text.includes('danger-full-access'));
   assert.ok(codexConfig({ ...p, mcp: { board:{url:'https://mcp.example', header:'X-API-Key'} } }, '/tmp/home','/work').includes('env_http_headers = { "X-API-Key" = "ROLE_MCP_BOARD_TOKEN" }'));
   for (const tool of ['WebFetch', 'WebSearch', 'Agent']) assert.throws(() => codexConfig({ ...p, nativeTools:[tool] }, '/tmp/home','/work'), /not yet supported/);
