@@ -61,6 +61,8 @@ jobs:
 
 `lunareng/airlock-actions/gate` is the autonomy gate every repository runs on its pull requests. It scores the PR's level from the paths it touches, its `AUTONOMY.yaml` and its file in your policy repo (the stricter of the two), and labels it `level:Lx`. It fails an agent's L1 or L2 PR until your human owner approves its current commit, and says why on the Checks tab.
 
+In your policy repo itself, a PR that changes its `config.yaml` (and the file your tenant's `policyConfigFile` names, when Airlock's answer names another) scores L2 or stricter, whatever that repo's default or carve-outs: its floors and its MCP connectors' `mode` and `deny` take effect when it merges, with no person in between. Your floors can tighten it, never loosen it. A `config.yaml` in any other repository scores as that repository's policy says.
+
 It reads your policy repo through Airlock, so the workflow must be `.github/workflows/autonomy-gate.yml` and its job must be named `autonomy-gate`:
 
 ```yaml

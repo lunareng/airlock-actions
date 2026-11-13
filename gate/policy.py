@@ -8,8 +8,9 @@ policy repo's default branch:
   repos/<this repo>.yaml     this repository's policy there, the stricter of it and AUTONOMY.yaml scores the PR
   roles/*/role.yaml          every role's bot login, so a PR any role opens is an agent's
 then hands the token back. It writes the gate's config (config.yaml with every role's login and Airlock's App login
-under agent_markers.logins; `floors` passes through as written) and this repository's policy file. A `floors` the gate
-can't read fails here, before anything is scored.
+under agent_markers.logins; `floors` passes through as written; and `policy_repository` and `policy_config_files`, the
+repository read and its config files, so that a PR there changing one scores L2 or stricter, airlock-actions#35) and
+this repository's policy file. A `floors` the gate can't read fails here, before anything is scored.
 
 Airlock's App (lunareng/airlock#251). Every role on Airlock opens its pull requests as one App. Its login is Airlock's
 to say, not the tenant's: the read's answer names it (`appLogin`), and it goes into the gate's config as an agent login
@@ -50,6 +51,7 @@ TOKEN = re.compile(r"[A-Za-z0-9_.~+/=-]{20,4096}")
 APP_LOGIN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\[bot\]")
 REPO = re.compile(r"[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}")
 NAME = re.compile(r"[A-Za-z0-9._-]{1,100}")
+IN_REPO = re.compile(r"[A-Za-z0-9._{}-]+(/[A-Za-z0-9._{}-]+)*")  # Airlock's inRepo: a relative path inside the repository
 ROLE_FILE = re.compile(r"roles/[A-Za-z0-9._-]{1,100}/role\.yaml")
 MAX_ROLES = 200
 API = os.environ.get("GITHUB_API_URL", "https://api.github.com")
@@ -117,6 +119,15 @@ def oidc(audience: str) -> str:
     return value
 
 
+def config_file(value) -> str | None:
+    """The tenant's policyConfigFile when Airlock's answer names one inside the repository, else None: the gate then
+    holds config.yaml alone, as Airlock falls back to it for a value that isn't a path inside the repository."""
+    if isinstance(value, str) and len(value) <= 200 and IN_REPO.fullmatch(value) and \
+            all(s not in (".", "..") for s in value.split("/")):
+        return value
+    return None
+
+
 def read_grant(airlock: str) -> tuple[str, dict]:
     """The read's token, masked, and Airlock's whole answer. The answer is checked by granted(), after the caller holds
     the token: whatever is wrong with the rest of it, the token is still handed back."""
@@ -131,8 +142,9 @@ def read_grant(airlock: str) -> tuple[str, dict]:
     return token, a
 
 
-def granted(answer: dict) -> tuple[str, str]:
-    """(the policy repository, Airlock's App login) from the read's answer. Both are Airlock's to say."""
+def granted(answer: dict) -> tuple[str, str, str | None]:
+    """(the policy repository, Airlock's App login, the tenant's policyConfigFile when it is a path inside the
+    repository) from the read's answer. All three are Airlock's to say."""
     repo, app = answer.get("repository") or "", answer.get("appLogin")
     if not isinstance(repo, str) or not REPO.fullmatch(repo):
         raise Stop("Airlock's answer names no policy repository")
@@ -140,7 +152,7 @@ def granted(answer: dict) -> tuple[str, str]:
         # Never a reason to go on without it: with no App login, the App's pull request would score as a person's.
         raise Stop("Airlock's answer doesn't name its App (appLogin), so the gate can't tell which pull requests "
                    "Airlock's App opened; this gate needs an Airlock that answers it (lunareng/airlock#251)")
-    return repo, app
+    return repo, app, config_file(answer.get("policyConfigFile"))
 
 
 def github(token: str, path: str, raw: bool = False):
@@ -182,12 +194,19 @@ def airlock_block(config: dict, app_login: str, origin: str) -> tuple[dict, str 
     return {**block, "app_login": app_login, "url": origin}, note
 
 
-def gate_config(config: dict, roles: list[dict], app_login: str, origin: str) -> tuple[dict, str | None]:
+def gate_config(config: dict, roles: list[dict], app_login: str, origin: str, repo: str | None = None,
+                other_config: str | None = None) -> tuple[dict, str | None]:
     """(the gate's config, a note for the log): config.yaml with every role's bot login and Airlock's App login as
-    agent markers, and the `airlock` block Airlock's own answer gives (airlock_block). The App's login is added
+    agent markers, the `airlock` block Airlock's own answer gives (airlock_block), and the policy repository with its
+    config files (config.yaml, and the tenant's policyConfigFile when it is another file). The App's login is added
     whether or not a role file says it is on Airlock: what a pull request's author is doesn't depend on a file the
-    tenant writes."""
+    tenant writes. policy_repository and policy_config_files are always this read's own, never the file's."""
     cfg = dict(config)
+    cfg.pop("policy_repository", None)
+    cfg.pop("policy_config_files", None)
+    if repo:
+        cfg["policy_repository"] = repo
+        cfg["policy_config_files"] = list(dict.fromkeys(["config.yaml", *([other_config] if other_config else [])]))
     markers = cfg.get("agent_markers")
     if markers is None:
         markers = {}
@@ -260,9 +279,9 @@ def main() -> int:
     token = None
     try:
         token, answer = read_grant(airlock)
-        repo, app_login = granted(answer)
+        repo, app_login, other_config = granted(answer)
         config, roles, policy = read_policy(token, repo, a.repo_name)
-        cfg, note = gate_config(config, roles, app_login, airlock)
+        cfg, note = gate_config(config, roles, app_login, airlock, repo, other_config)
     except Stop as e:
         print(f"::error title=autonomy gate::{_line(e)}; no policy, no gate")
         return 1

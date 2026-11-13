@@ -330,6 +330,55 @@ with tempfile.TemporaryDirectory() as d:
     assert code == 0 and out["level"] == "L3" and not any("lunareng/autonomy main" in r for r in out["reasons"]), "no flag: as before"
 print("ok  a tightening on main fails a green PR through the CLI")
 
+# airlock-actions#35: in the policy repo, a change to its config.yaml (floors, MCP connectors' mode and deny) is L2 or
+# stricter in every tenant, whatever the policy repo's own default or carve-outs; the same file elsewhere is that repo's.
+from gate import policy_config_files  # noqa: E402
+in_policy = {"policy_repository": "acme/policy", "policy_config_files": ["config.yaml", "airlock/config.yaml"]}
+assert policy_config_files(in_policy, "acme/policy") == ("config.yaml", "airlock/config.yaml")
+assert policy_config_files(in_policy, "Acme/Policy") == ("config.yaml", "airlock/config.yaml"), "names compare without case"
+assert policy_config_files(in_policy, "acme/api") == (), "another repository's config.yaml is an ordinary file"
+assert policy_config_files({"policy_repository": "acme/policy"}, "acme/policy") == ("config.yaml",), "config.yaml always"
+assert policy_config_files({}, "acme/policy") == () and policy_config_files(in_policy, None) == ()
+l4 = {"default": "L4", "paths": [{"glob": "config.yaml", "level": "L4"}, {"glob": "docs/**", "level": "L4"}]}
+pc = ("config.yaml", "airlock/config.yaml")
+lvl, why = effective_level(l4, ["config.yaml"], policy_config=pc)
+assert lvl == "L2" and any(r.startswith("config.yaml: L2 or stricter, the policy repo's config") for r in why), why
+assert effective_level(l4, ["airlock/config.yaml"], policy_config=pc)[0] == "L2", "the tenant's policyConfigFile too"
+assert effective_level(l4, ["docs/config.yaml", "sub/config.yaml"], policy_config=pc)[0] == "L4", "only the files named, by exact path"
+assert effective_level(l4, ["config.yaml"])[0] == "L4", "outside the policy repo, the carve-out scores it"
+assert effective_level({"default": "L1"}, ["config.yaml"], policy_config=pc)[0] == "L1", "a stricter default stands"
+assert effective_level(l4, ["config.yaml"], floors={"config": "L1"}, policy_config=pc)[0] == "L1", "a tenant's floor tightens it"
+assert effective_level(l4, ["config.yaml"], floors={"config": "L3"}, policy_config=pc)[0] == "L2", "and never loosens it"
+lvl, _ = with_main_policy(*effective_level(l4, ["config.yaml"], policy_config=pc), l4, ["config.yaml"])
+assert lvl == "L2", "a main policy as loose as the copy doesn't lift it"
+
+# The Done means, through the CLI: repos/<policy repo>.yaml's default is L4 and the PR touches only config.yaml.
+with tempfile.TemporaryDirectory() as d:
+    run = lambda *a, **kw: subprocess.run(a, cwd=d, check=True, capture_output=True, text=True, **kw)  # noqa: E731
+    run("git", "init", "-q", "-b", "main")
+    Path(d, "AUTONOMY.yaml").write_text("default: L4\n")
+    Path(d, "config.yaml").write_text("human_owner: '@owner'\nmcp_connectors:\n  docs:\n    mode: enforce\n")
+    run("git", "add", "-A")
+    run("git", "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", "base")
+    Path(d, "config.yaml").write_text("human_owner: '@owner'\nmcp_connectors:\n  docs:\n    mode: observe\n")
+    run("git", "add", "-A")
+    run("git", "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", "enforce to observe")
+    cfg, main_file = Path(d, "gate-config.yaml"), Path(d, "main-policy.yaml")  # untracked: the diff is HEAD~1...HEAD
+    cfg.write_text(yaml.safe_dump({"human_owner": "@owner", "agent_markers": {"logins": ["acme-bot[bot]"]},
+                                   "policy_repository": "acme/policy", "policy_config_files": ["config.yaml"]}))
+    main_file.write_text("default: L4\n")
+    def policy_repo_gate(repository, extra=()):
+        r = subprocess.run([sys.executable, str(GATE_PY), "--base", "HEAD~1", "--author", "acme-bot[bot]", "--config", str(cfg),
+                            "--main-policy", str(main_file), "--repository", repository, "--json", *extra], cwd=d, capture_output=True, text=True)
+        return r.returncode, json.loads(r.stdout)
+    code, out = policy_repo_gate("acme/policy")
+    assert code == 1 and out["level"] == "L2", f"the policy repo's config.yaml scores L2 at an L4 default: {out}"
+    code, out = policy_repo_gate("acme/policy", ["--approved"])
+    assert code == 0 and out["level"] == "L2", "and passes once the owner approves its head commit"
+    code, out = policy_repo_gate("acme/api")
+    assert code == 0 and out["level"] == "L4", f"the same change to another repository's config.yaml is that repository's level: {out}"
+print("ok  the policy repo's config.yaml scores L2 or stricter whatever its default; another repo's scores its own level")
+
 # A failing gate says why on the Checks tab (Matthew 2026-10-30): one `::error` line, what blocks it first, then
 # what set the level, cut short on a large diff, and no reason can end the command or start another.
 from gate import annotation, verdict_line  # noqa: E402

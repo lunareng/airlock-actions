@@ -405,4 +405,15 @@ for author in ("ada", "acme-station[bot]", "lunar-astronauts", ""):
     assert r.returncode == 0 and stamp is None and calls == [], (author, r.stdout, r.stderr, calls)
 print("ok  the stamp is read from the action's own Airlock for the App's pull requests, and for nobody else's")
 
+# airlock-actions#35: the gate's config names the repository read and its config files, so a PR in the policy repo that
+# changes one scores L2 or stricter. Those keys are the read's own: config.yaml can't set them.
+r, cfg, policy = run(app_world(config=BARE + "policy_repository: acme/api\npolicy_config_files: [nothing.yaml]\n"))
+assert r.returncode == 0 and cfg["policy_repository"] == "acme/policy" and cfg["policy_config_files"] == ["config.yaml"], cfg
+for named, files in [("airlock/config.yaml", ["config.yaml", "airlock/config.yaml"]), ("config.yaml", ["config.yaml"]),
+                     ("../config.yaml", ["config.yaml"]), ("/etc/config.yaml", ["config.yaml"]), ("a//b.yaml", ["config.yaml"]),
+                     ("a\nb.yaml", ["config.yaml"]), (7, ["config.yaml"]), (None, ["config.yaml"])]:
+    r, cfg, policy = run(app_world(policyConfigFile=named))
+    assert r.returncode == 0 and cfg["policy_config_files"] == files, (named, cfg)
+print("ok  the gate's config names the policy repo and its config files; a policyConfigFile outside the repo is config.yaml alone")
+
 print("OK: 0 failing case(s)")
