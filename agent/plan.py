@@ -68,7 +68,7 @@ if "create" in (writes.get("issues") or []):
     # watches and the dashboard's Waiting on you lists, by its label and this role's marker.
     prompt += (
         "When you need a decision only the human owner can make before you can go on (scope, money, access, a policy "
-        "change), ask on GitHub, never only in a board post or a pull request body: open one issue in the repository "
+        "change), use request_user_input when that native tool is available; its answer cannot authorize broader repository access or renew this run. Otherwise ask on GitHub, never only in a board post or a pull request body: open one issue in the repository "
         f"the work is in, labelled needs-owner, titled with the decision, its body one yes/no question per numbered "
         f"line, ending with <!-- {role}:asks -->. Then leave that work and go on with anything else. The owner's "
         "answer on that issue starts you again with the issue as your signal: act on it and say on the issue what "
@@ -89,7 +89,7 @@ if selected['provider'] == 'codex':
                "Read files with cat, head, tail, rg, ls or sed -n START,ENDp. Other commands must match run.bash. "
                "Use apply_patch for permitted edits. This run has a conservative maximum of " + str(int(run.get('max_turns', 200))) + " tool calls, rather than Claude turns.")
 open(f"{tmp}/prompt.txt", "w").write(prompt)
-json.dump({**selected, "prompt": prompt, "maxTurns": int(run.get("max_turns", 200)), "bash": run.get("bash") or [], "nativeTools": run.get("tools") or [], "tools": tools, "mcp": mcp, "edit": bool(writes.get("pull_requests")), "writeGitDirs": ["repos/" + r.split("/")[1] + "/.git" for r in clone if r in wrote and writes.get("pull_requests")], "mcpConfig": f"{tmp}/mcp.json", "allowed": ','.join(allowed)}, open(f"{tmp}/plan.json", "w"))
+json.dump({**selected, "role": role, "prompt": prompt, "maxTurns": int(run.get("max_turns", 200)), "bash": run.get("bash") or [], "nativeTools": run.get("tools") or [], "tools": tools, "mcp": mcp, "edit": bool(writes.get("pull_requests")), "writeGitDirs": ["repos/" + r.split("/")[1] + "/.git" for r in clone if r in wrote and writes.get("pull_requests")], "mcpConfig": f"{tmp}/mcp.json", "allowed": ','.join(allowed)}, open(f"{tmp}/plan.json", "w"))
 out = open(os.environ["GITHUB_OUTPUT"], "a")
 out.write(f"provider={selected['provider']}\nauth={selected['auth']}\nmodel={selected['model']}\nmax_turns={int(run.get('max_turns', 200))}\n")
 out.write(f"allowed={','.join(allowed)}\nconnectors={json.dumps(sorted(mcp))}\n")

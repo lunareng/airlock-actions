@@ -44,6 +44,8 @@ def allowed(event, policy):
         return bool(policy.get('edit'))
     if name in ['update_plan', 'view_image']:
         return True
+    if name == 'request_user_input':
+        return policy.get('interactions') is True
     if isinstance(name, str) and name.startswith('mcp__'):
         import fnmatch
         return any(fnmatch.fnmatchcase(name, pattern) for pattern in policy.get('mcp', []))
