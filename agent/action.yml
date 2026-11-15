@@ -18,6 +18,11 @@ inputs:
     description: API credential, required only for codex/api-key.
   runner-auth-url:
     description: Secure credential broker origin, required only for codex/subscription.
+  native-interactions:
+    description: Opt in to the pinned Codex native question bridge; does not extend run authority.
+    default: 'false'
+  airlock-url:
+    description: HTTPS Airlock origin for the authenticated private interaction API.
 runs:
   using: composite
   steps:
@@ -37,4 +42,7 @@ runs:
         ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
         OPENAI_API_KEY: ${{ inputs.openai-api-key }}
         RUNNER_AUTH_URL: ${{ inputs.runner-auth-url }}
+        CLI_VERSION: ${{ inputs.cli-version }}
+        NATIVE_INTERACTIONS: ${{ inputs.native-interactions }}
+        INTERACTION_ORIGIN: ${{ inputs.airlock-url }}
       run: node "$ACTION_PATH/run.mjs"

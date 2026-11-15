@@ -97,3 +97,15 @@ test('broker fresh OIDC, no redirects and no response error body leaks',async()=
   assert.throws(()=>subscription({...auth,OPENAI_API_KEY:'key'}));
   assert.throws(()=>brokerClient('http://broker.example',{}));
 });
+
+test('native bridge rejects unsupported provider, pin or role before launch', async () => {
+  for (const [override, env] of [
+    [{provider:'claude'}, {CLI_VERSION:'0.167.0'}],
+    [{role:'engineer'}, {CLI_VERSION:'0.166.0'}],
+    [{role:''}, {CLI_VERSION:'0.167.0'}],
+  ]) {
+    let launched=false;
+    await assert.rejects(execute({...plan,...override},{env:{NATIVE_INTERACTIONS:'true',...env},start:()=>{launched=true;throw new Error('must not launch')}}));
+    assert.equal(launched,false);
+  }
+});

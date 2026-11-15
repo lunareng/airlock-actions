@@ -4,6 +4,9 @@ import { existsSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { brokerClient, leaseAuth } from './auth.mjs';
+import { interactionClient } from './interactions.mjs';
+import { nativeCodex } from './native-codex.mjs';
+import { open } from 'node:fs/promises';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const toml = JSON.stringify;
@@ -17,6 +20,7 @@ export function codexConfig(plan, home, workspace) {
     `forced_login_method = ${toml(plan.auth === 'subscription' ? 'chatgpt' : 'api')}`,
     'cli_auth_credentials_store = "file"', 'web_search = "disabled"',
     '[features]', 'hooks = true', 'unified_exec = false', 'multi_agent = false',
+    `default_mode_request_user_input = ${plan.interactions === true}`,
     'apps = false', 'plugins = false', 'computer_use = false', 'browser_use = false',
     'browser_use_external = false', 'in_app_browser = false', 'browser_use_full_cdp_access = false',
     'skill_mcp_dependency_install = false', 'skill_search = false', 'workspace_dependencies = false',
@@ -71,6 +75,12 @@ export function agentEnvironment(plan, env, home) {
 export async function execute(plan, { env = process.env, cwd = process.cwd(), start = spawn, broker = brokerClient } = {}) {
   if (!['claude', 'codex'].includes(plan.provider) || !['subscription', 'api-key'].includes(plan.auth)) throw new Error('invalid selected provider/auth');
   if (!Number.isInteger(plan.maxTurns) || plan.maxTurns < 1 || plan.maxTurns > 10000) throw new Error('invalid tool budget');
+  const interactive = env.NATIVE_INTERACTIONS === 'true';
+  if (env.NATIVE_INTERACTIONS && !['true', 'false'].includes(env.NATIVE_INTERACTIONS)) throw new Error('invalid native interaction selection');
+  if (interactive && env.CLI_VERSION !== '0.167.0') throw new Error('native bridge requires qualified Codex 0.167.0');
+  if (interactive && (plan.provider !== 'codex' || !/^[a-z0-9][a-z0-9-]{0,62}$/.test(plan.role || ''))) throw new Error('native bridge currently requires a qualified Codex role');
+  plan = { ...plan, interactions: interactive };
+  const interactions = interactive ? interactionClient(env.INTERACTION_ORIGIN, env) : null;
   const root = await mkdtemp(join(env.RUNNER_TEMP || '/tmp', 'airlock-agent-'));
   await chmod(root, 0o700);
   const secrets = new Set(Object.entries(env).filter(([k,v]) => v && /TOKEN|SECRET|API_KEY/.test(k)).map(([,v]) => v));
@@ -83,14 +93,14 @@ export async function execute(plan, { env = process.env, cwd = process.cwd(), st
       await writeFile(join(root, 'config.toml'), codexConfig(plan, root, resolve(cwd)), { mode: 0o600 });
       await copyFile(join(here, 'guard.py'), join(root, 'guard.py'));
       const mcp = Object.entries(plan.tools || {}).flatMap(([c,ts]) => ts.map(t => `mcp__${c}__${t}`));
-      await writeFile(join(root, 'guard-policy.json'), JSON.stringify({ bash: plan.bash || [], edit: plan.edit, mcp, maxTools: plan.maxTurns }), { mode: 0o600 });
+      await writeFile(join(root, 'guard-policy.json'), JSON.stringify({ bash: plan.bash || [], edit: plan.edit, mcp, maxTools: plan.maxTurns, interactions: interactive }), { mode: 0o600 });
       if (plan.auth === 'subscription') {
         if (!env.RUNNER_AUTH_URL) throw new Error('Codex subscription requires runner-auth-url with refreshed credential storage (infra#109)');
         lease = await leaseAuth(root, broker(env.RUNNER_AUTH_URL, env));
         keepAuthSecrets(lease.auth);
       }
     }
-    const args = plan.provider === 'claude'
+    const args = interactive ? ['app-server', '--strict-config', '--listen', 'stdio://'] : plan.provider === 'claude'
       ? ['-p', plan.prompt, '--model', plan.model, '--max-turns', `${plan.maxTurns}`, '--mcp-config', plan.mcpConfig, '--output-format', 'json', '--allowedTools', plan.allowed]
       // Hook sources are bundled with this pinned action, copied outside the writable checkout.
       // Only hook trust is bypassed for these vetted hooks; approvals and sandbox remain enforced.
@@ -102,21 +112,33 @@ export async function execute(plan, { env = process.env, cwd = process.cwd(), st
     // Leave five minutes for saving/revoking within the 55-minute credential lease.
     const timer = setTimeout(() => { failure = new Error('agent exceeded 50-minute execution budget'); stop(); }, 3000000);
     const budget = setInterval(() => { if (existsSync(join(root, 'budget-exhausted'))) { failure = new Error('Codex tool-call budget exceeded'); stop(); } }, 100);
-    child.stdout.on('data', chunk => { stdout += chunk; if (stdout.length > 16_000_000) { failure = new Error('agent output limit exceeded'); stop(); } });
+    if (!interactive) child.stdout.on('data', chunk => { stdout += chunk; if (stdout.length > 16_000_000) { failure = new Error('agent output limit exceeded'); stop(); } });
     child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-1_000_000); });
     child.stdin.on('error', () => {});
-    child.stdin.end(plan.provider === 'codex' ? plan.prompt : undefined);
+    if (!interactive) child.stdin.end(plan.provider === 'codex' ? plan.prompt : undefined);
     let status;
-    try { status = await new Promise((ok, bad) => { child.on('error', bad); child.on('close', ok); }); }
+    try {
+      const exited = new Promise((ok, bad) => { child.on('error', bad); child.on('close', ok); });
+      exited.catch(() => {});
+      if (interactive) {
+        try {
+          result = await nativeCodex(child, { plan, cwd, home: root, apiKey: plan.auth === 'api-key' ? env.OPENAI_API_KEY : undefined, call: interactions, persist: async receipt => {
+            const file = await open(join(root, 'interaction-send-intents.jsonl'), 'a', 0o600);
+            try { await file.writeFile(JSON.stringify(receipt) + '\n'); await file.sync(); } finally { await file.close(); }
+          } });
+        } catch { failure = new Error('native interaction requires recovery'); stop(); }
+      }
+      status = await exited;
+    }
     finally { clearTimeout(timer); clearInterval(budget); }
     if (existsSync(join(root, 'budget-exhausted'))) throw new Error('Codex tool-call budget exceeded');
-    if (status !== 0) throw new Error(`agent exited with status ${status}`);
+    if (!interactive && status !== 0) throw new Error(`agent exited with status ${status}`);
     if (failure) throw failure;
     if (plan.provider === 'claude') {
       const answer = JSON.parse(stdout);
       if (answer.is_error) throw new Error('Claude reported an unsuccessful run');
       result = answer.result || '';
-    } else {
+    } else if (!interactive) {
       const events = stdout.trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
       if (!events.some(e => e.type === 'turn.completed') || events.some(e => ['turn.failed', 'error'].includes(e.type))) throw new Error('Codex did not complete successfully');
       result = await readFile(join(root, 'last.txt'), 'utf8');
@@ -133,6 +155,9 @@ export async function execute(plan, { env = process.env, cwd = process.cwd(), st
     }
     await rm(root, { recursive: true, force: true });
   }
+  // Native conversations are private. Do not upload responses, answers, or stderr
+  // through the workflow's existing public result artifacts.
+  if (interactive) { result = 'Native interaction run ended; inspect private Airlock history.'; stderr = ''; }
   const summary = `Provider: ${plan.provider}\nAuthentication: ${plan.auth}\nModel: ${plan.model}\n${plan.provider === 'codex' ? `Tool-call cap: ${plan.maxTurns}\n` : ''}\n${result}${failure ? `\n\nRun failed: ${failure.message}\n${stderr.slice(-4000)}` : ''}`;
   await writeFile(join(cwd, plan.provider === 'claude' ? 'run.json' : 'run.jsonl'), redact(stdout));
   await writeFile(join(cwd, 'result.txt'), redact(summary));

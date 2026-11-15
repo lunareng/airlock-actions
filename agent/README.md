@@ -72,3 +72,61 @@ command guard and budget. `node --test test/agent/codex-cli.test.mjs` drives the
 mock Responses API: an undeclared command is blocked and a declared Git commit succeeds inside its sandbox.
 It uses no provider credentials or paid inference. CI installs exactly the pinned Codex release for that test.
 Actual subscription smoke jobs remain an operator proof before rollout.
+
+## Native interactions (opt-in source action)
+
+Part of airlock-actions#78. `agent` accepts `native-interactions: 'true'` and an
+`airlock-url` HTTPS origin. The plan must name its `role`. This currently selects
+the pinned Codex 0.167.0 app-server over private stdio. Claude Code is refused
+before launch on this path; its native control-protocol qualification remains
+separate work. Existing noninteractive provider selection is unchanged.
+
+The bridge forwards native requests to Airlock's authenticated interaction API.
+Each operation obtains a fresh purpose-scoped GitHub OIDC proof in the parent
+launcher. The native child receives no Actions OIDC environment variables.
+Only Airlock authorizes the owner answer and releases its native response. The
+bridge records local send intent before claiming delivery, writes once, and
+stops on uncertainty. It never treats a saved transcript as a live pending RPC.
+Questions, answers and native stderr are excluded from workflow result artifacts.
+
+Waiting consumes the existing 50-minute execution budget. Neither an answer nor
+a reconnect renews GitHub/MCP grants or the subscription lease. Service-side
+durability does not suspend or resurrect a native process. A restarted process
+has a new epoch and cannot replace the existing binding. Native closure can mean
+cancellation; it is not evidence of successful work or a merged PR.
+
+This source action is not a release or tenant rollout. The reusable workflow's
+immutable action pins remain unchanged; adoption follows review and release.
+SNS notifications, consumer UI, complete conversation capture, and hosted-runner
+migration are outside this change.
+
+Before the first turn, native mode binds the local execution environment, checks
+its effective sandbox and writable roots, and uses `hooks/list` plus
+`config/value/write` to trust only the exact bundled hook definition in the
+private home. An unexpected hook, a changed definition, or broader roots refuses
+the run before inference. Native tool/sandbox approval requests are never
+answered by the question bridge. Codex's root hook-trust bypass flag does not
+qualify the app-server path; its hook trust is explicitly verified instead.
+
+Credential-free proofs:
+
+- `node --test test/agent/agent.test.mjs test/agent/interactions.test.mjs`
+- With Codex 0.167.0 installed:
+  `node --test test/agent/codex-cli.test.mjs test/agent/native-codex.test.mjs`
+- With a local Airlock checkout at #282 head
+  `568d21726675b9ecc0cd02b9ff86b279df9db62a` and its `npm ci` dependencies:
+  `AIRLOCK_CHECKOUT=/path/to/airlock node test/agent/airlock-roundtrip.mjs`.
+  This adds a test through a temporary Go overlay, changes neither checkout,
+  and runs the actual interaction handlers, signed test OIDC proofs, and local
+  DynamoDB. It recreates the service between operations and covers interrupted
+  writes, lost HTTP responses, conflicting native IDs, owner demotion, and run
+  revocation/expiry, asserting unchanged repository grants and no duplicate
+  native writes. Public CI has no private-repository credential; this proof is
+  run separately against the pinned checkout.
+
+A live authenticated Actions run and owner response remains a separate
+operator qualification before rollout. Offline proofs do not establish live
+GitHub OIDC, broker availability, or a user's dashboard session. Claude Code's
+control-protocol bridge, reusable-workflow adoption, and release remain open
+under #78. Native mode fails closed on API outages and does not automatically
+restart or reattach a native session.
